@@ -1,0 +1,33 @@
+# third-party study clones (reference only, not part of Surrect)
+/testdisk/
+/scalpel/
+/foremost/
+/libfsntfs/
+/libfsfat/
+/sleuthkit/
+/ntfs-3g/
+
+# heavyweight / generated artifacts
+gauntlet.img
+*.img
+recovered*/
+__pycache__/
+*.pyc
+
+# run debris
+gauntlet_run.log
+gauntlet_run.err
+photorec.log
+*.map
+
+# desktop app build artifacts
+pycarve-desktop/node_modules/
+pycarve-desktop/dist/
+pycarve-desktop/build/
+pycarve-desktop/src-tauri/target/
+pycarve-desktop/src-tauri/binaries/*.exe
+pycarve-desktop/src-tauri/binaries/*.dll
+pycarve-desktop/*.spec
+
+# keep: source, tests, receipts (groundtruth.json, score.json),
+# license notices, terminfo data needed for compile

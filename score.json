@@ -1,0 +1,24 @@
+{
+ "recall": 99.44444444444444,
+ "precision": 99.44444444444444,
+ "matched": 179,
+ "targets": 180,
+ "fps": [
+  [
+   "0202_957154670273.jpg",
+   "junk"
+  ]
+ ],
+ "intermediates": 35,
+ "missed": [
+  [
+   "jpg",
+   957154670273,
+   1552
+  ]
+ ],
+ "frag_ok": 20,
+ "frag_total": 20,
+ "hi_ok": 32,
+ "hi_total": 32
+}
