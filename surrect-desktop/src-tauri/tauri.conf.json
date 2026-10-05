@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "PyCarve",
+  "productName": "Surrect",
   "version": "0.1.0",
-  "identifier": "com.pycarve.desktop",
+  "identifier": "com.surrect.desktop",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",
@@ -10,14 +10,14 @@
     "beforeBuildCommand": "npm run build"
   },
   "app": {
-    "windows": [{ "title": "PyCarve", "width": 1280, "height": 800, "minWidth": 1024, "minHeight": 640 }],
+    "windows": [{ "title": "Surrect", "width": 1280, "height": 800, "minWidth": 1024, "minHeight": 640 }],
     "security": { "csp": null }
   },
   "bundle": {
     "active": true,
     "targets": "all",
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico", "icons/icon.icns"],
-    "externalBin": ["binaries/pycarve", "binaries/photorec"],
+    "externalBin": ["binaries/surrect", "binaries/photorec"],
     "resources": [
       "binaries/63/*",
       "binaries/cygwin1.dll",

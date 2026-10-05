@@ -1,6 +1,6 @@
 import sys, os, struct, sqlite3, shutil, random
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import pycarve
+import surrect
 W = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # small sqlite
@@ -29,7 +29,7 @@ imgp = os.path.join(W, "balloon_test.img")
 open(imgp, "wb").write(img)
 
 shutil.rmtree(os.path.join(W, "recovered_balloon"), ignore_errors=True)
-res, total, audit = pycarve.carve(imgp, os.path.join(W, "recovered_balloon"))
+res, total, audit = surrect.carve(imgp, os.path.join(W, "recovered_balloon"))
 sizes = {f[3]: f[5] for f in res}
 print("carved:", [(f[0], f[5]) for f in res])
 assert sizes.get("sqlite") == len(sq), f"sqlite {sizes.get('sqlite')} != {len(sq)}"

@@ -1,6 +1,6 @@
 THIRD-PARTY SOFTWARE IN THIS APP
 ===============================
-PyCarve bundles its own engine (pycarve, written from scratch for this
+Surrect bundles its own engine (surrect, written from scratch for this
 project) side-by-side with the genuine, unmodified PhotoRec binary.
 The two programs are separate executables and never share code
 ("mere aggregation").
@@ -17,6 +17,6 @@ The two programs are separate executables and never share code
    GPL compliance: the complete corresponding source is available at
    the URL above. This notice + COPYING.txt ship with the app.
 
-2) pycarve (our engine) - pycarve-x86_64-pc-windows-msvc.exe
-   Written from scratch for PyCarve. Studied TestDisk/Scalpel/Sleuth Kit
+2) surrect (our engine) - surrect-x86_64-pc-windows-msvc.exe
+   Written from scratch for Surrect. Studied TestDisk/Scalpel/Sleuth Kit
    sources as references only; contains no third-party code.

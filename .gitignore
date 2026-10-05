@@ -21,13 +21,24 @@ photorec.log
 *.map
 
 # desktop app build artifacts
-pycarve-desktop/node_modules/
-pycarve-desktop/dist/
-pycarve-desktop/build/
-pycarve-desktop/src-tauri/target/
-pycarve-desktop/src-tauri/binaries/*.exe
-pycarve-desktop/src-tauri/binaries/*.dll
-pycarve-desktop/*.spec
+surrect-desktop/node_modules/
+surrect-desktop/dist/
+surrect-desktop/build/
+surrect-desktop/src-tauri/target/
+surrect-desktop/src-tauri/binaries/*.exe
+surrect-desktop/src-tauri/binaries/*.dll
+surrect-desktop/*.spec
+
+# dev-machine helpers (absolute local paths, not portable)
+build/
+icons_tmp/
+*.spec
+build_surrect.*
+install_buildtools.*
+vs_install.done
+vs_install_out.log
+*.pdb
+*.d
 
 # keep: source, tests, receipts (groundtruth.json, score.json),
 # license notices, terminfo data needed for compile

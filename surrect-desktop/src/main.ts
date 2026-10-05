@@ -17,7 +17,7 @@ const state = {
   cdst: "",
   cloning: false,
   srcTab: "drive" as "drive" | "file",
-  engine: "pycarve" as "pycarve" | "photorec",
+  engine: "surrect" as "surrect" | "photorec",
   drives: [] as { letter: string; kind: string; size: string; health: string; temp: string }[],
   isAdmin: false,
   driveSel: "",
@@ -38,7 +38,7 @@ function nav(label: string, v: View) {
 function shell(body: string) {
   return `
     <nav class="sidebar">
-      <div class="brand">PyCarve</div>
+      <div class="brand">Surrect</div>
       ${nav("Source", "source")}${nav("Scan", "scan")}${nav("Results", "results")}${nav("Forensics", "forensics")}${nav("Audit", "audit")}${nav("Image", "image")}${nav("Hex", "hex")}
     </nav>
     <main class="main">${body}</main>`;
@@ -52,7 +52,7 @@ function render() {
         <button class="btn ${state.srcTab === "file" ? "primary" : ""}" data-tab="file">Image file</button>
       </div>`;
     const engineTabs = `<div class="row" style="margin-bottom:12px">
-        <button class="btn ${state.engine === "pycarve" ? "primary" : ""}" data-engine="pycarve">PyCarve (fast, named files)</button>
+        <button class="btn ${state.engine === "surrect" ? "primary" : ""}" data-engine="surrect">Surrect (fast, named files)</button>
         <button class="btn ${state.engine === "photorec" ? "primary" : ""}" data-engine="photorec">PhotoRec 7.2 (480 formats)</button>
       </div>`;
     if (state.srcTab === "drive") {
@@ -76,7 +76,7 @@ function render() {
       </div></div>`;
   } else {
       body = `
-      <h1>Source image</h1><p class="sub">Pick a disk image file. Backend: pycarve streaming engine.</p>
+      <h1>Source image</h1><p class="sub">Pick a disk image file. Backend: surrect streaming engine.</p>
       ${tabs}
       ${engineTabs}
       <div class="card"><div class="row">
@@ -146,7 +146,7 @@ function render() {
     render();
   }));
   app.querySelectorAll("[data-engine]").forEach(b => b.addEventListener("click", () => {
-    state.engine = (b as HTMLElement).dataset.engine as "pycarve" | "photorec";
+    state.engine = (b as HTMLElement).dataset.engine as "surrect" | "photorec";
     render();
   }));
   const img = document.getElementById("img") as HTMLInputElement | null;
@@ -272,7 +272,7 @@ async function runHexRead() {
 async function runClone() {
   if (!state.csrc || !state.cdst) return;
   state.cloning = true; render();
-  appendLog(`$ pycarve --clone "${state.csrc}" "${state.cdst}"`);
+  appendLog(`$ surrect --clone "${state.csrc}" "${state.cdst}"`);
   try {
     const res = await invoke<string>("run_clone", { image: state.csrc, dst: state.cdst, block: 1048576, retries: 3 });
     appendLog(res);
@@ -299,13 +299,13 @@ async function runCarve() {
     state.scanning = false; render();
     return;
   }
-  appendLog(`$ pycarve "${state.image}" -o "${state.outdir}"${state.frag ? " --frag" : ""}`);
+  appendLog(`$ surrect "${state.image}" -o "${state.outdir}"${state.frag ? " --frag" : ""}`);
   try {
     const res = await invoke<string>("run_carve", { image: state.image, outdir: state.outdir, frag: state.frag });
     appendLog(res);
     await refreshResults();
   } catch (e) {
-    appendLog(`sidecar fallback: ${String(e)}\nTip: run 'py ../pycarve.py \"${state.image}\" -o \"${state.outdir}\"' manually, then reload.`);
+    appendLog(`sidecar fallback: ${String(e)}\nTip: run 'py ../surrect.py \"${state.image}\" -o \"${state.outdir}\"' manually, then reload.`);
   }
   state.scanning = false; render();
 }

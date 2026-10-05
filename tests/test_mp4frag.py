@@ -1,6 +1,6 @@
 import os, random, sys, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-import pycarve
+import surrect
 W = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 R = random.Random(11)
 SRC = open(os.path.join(W, "..", "test_download.mp4"), "rb").read()
@@ -19,8 +19,8 @@ open(os.path.join(W, "mp4frag_test.img"), "wb").write(bytes(img))
 open(os.path.join(W, "mp4frag_zerotest.img"), "wb").write(img2)
 
 t0 = time.time()
-r = pycarve.ImgReader(os.path.join(W, "mp4frag_test.img"))
-ext, gaps, score, complete = pycarve.stitch_mp4(r, 4, 4 * 1024 * 1024 * 1024, len(img))
+r = surrect.ImgReader(os.path.join(W, "mp4frag_test.img"))
+ext, gaps, score, complete = surrect.stitch_mp4(r, 4, 4 * 1024 * 1024 * 1024, len(img))
 asm = b"".join(r.readat(o, l) for o, l in ext)
 r.close()
 print(f"case1 (random gap + decoy): {time.time()-t0:.1f}s score={score} gaps={gaps}")
@@ -30,8 +30,8 @@ for o, l in ext:
 print("case1 OK: byte-exact, decoy rejected")
 
 t0 = time.time()
-r = pycarve.ImgReader(os.path.join(W, "mp4frag_zerotest.img"))
-ext2, gaps2, score2, _ = pycarve.stitch_mp4(r, 4, 4 * 1024 * 1024 * 1024, len(img2))
+r = surrect.ImgReader(os.path.join(W, "mp4frag_zerotest.img"))
+ext2, gaps2, score2, _ = surrect.stitch_mp4(r, 4, 4 * 1024 * 1024 * 1024, len(img2))
 asm2 = b"".join(r.readat(o, l) for o, l in ext2)
 r.close()
 print(f"case2 (12MB zero gap): {time.time()-t0:.1f}s score={score2} gaps={gaps2}")

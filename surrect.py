@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""pycarve v4 - streaming two-pass carver + NTFS folder recovery + imager + live drives.
+"""surrect v4 - streaming two-pass carver + NTFS folder recovery + imager + live drives.
 v4 changes: single streaming engine for files AND live drives (\\\\.\\E:).
   Pass 1 scans 4MB chunks for validated headers; pass 2 seeks to each header
   and pairs footers with bounded forward reads. O(1) RAM on any size.
@@ -1031,7 +1031,7 @@ def clone_disk(src, dst, block=MiB, retries=3, map_path=None, reverse=True, fres
                 status[bi] = ord("+"); good += 1; bad -= 1
     os.close(fi); os.close(fo)
     with open(mp, "w") as m:
-        m.write(f"# pycarve map: block={block} total={total}\n")
+        m.write(f"# surrect map: block={block} total={total}\n")
         run_i = 0
         for i in range(1, n):
             if status[i] != status[run_i]:
@@ -1699,7 +1699,7 @@ def is_admin():
 
 # ---------- CLI ----------
 def main():
-    ap = argparse.ArgumentParser(description="pycarve v4: carver + NTFS recovery + imager + live drives")
+    ap = argparse.ArgumentParser(description="surrect v4: carver + NTFS recovery + imager + live drives")
     ap.add_argument("image", nargs="?", help="image file or live drive (\\\\.\\E:)")
     ap.add_argument("-o", "--outdir", default="recovered")
     ap.add_argument("--only", default=None)

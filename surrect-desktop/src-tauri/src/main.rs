@@ -1,4 +1,4 @@
-//! PyCarve Tauri shell — thin bridge to the Python sidecar (pycarve v3).
+//! Surrect Tauri shell — thin bridge to the Python sidecar (surrect v3).
 //! Commands mirror the CLI: carve / list_results / read_audit / fls / icat / clone / preview.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -109,11 +109,11 @@ fn run_bin(bin: &str, args: &[&str], cwd: Option<&str>, extra_env: &[(&str, &str
 }
 
 fn run_sidecar(args: &[&str]) -> Result<String, String> {
-    // pycarve: prefer bundled exe, fall back to dev `py ../pycarve.py`
-    if let Some(bin) = resolve_bin("pycarve") {
+    // surrect: prefer bundled exe, fall back to dev `py ../surrect.py`
+    if let Some(bin) = resolve_bin("surrect") {
         return run_bin(&bin, args, None, &[]);
     }
-    let out = Command::new("py").arg("../pycarve.py").args(args).output().map_err(|e| e.to_string())?;
+    let out = Command::new("py").arg("../surrect.py").args(args).output().map_err(|e| e.to_string())?;
     let mut s = String::from_utf8_lossy(&out.stdout).to_string();
     s.push_str(&String::from_utf8_lossy(&out.stderr));
     if out.status.success() { Ok(s) } else { Err(s) }
@@ -168,7 +168,7 @@ fn list_results(outdir: String) -> Result<Vec<CarvedFile>, String> {
     for e in rd.flatten() {
         let name = e.file_name().to_string_lossy().to_string();
         if name == "audit.txt" || name == "manifest.csv" || name == "photorec.log" { continue; }
-        // pycarve: NNNN_OFFSET.ext | photorec: fNNNNNNN.ext / report.xml
+        // surrect: NNNN_OFFSET.ext | photorec: fNNNNNNN.ext / report.xml
         let parts: Vec<&str> = name.split(['_', '.'].as_ref()).collect();
         let off = if parts.len() >= 3 { parts[1].parse::<u64>().unwrap_or(0) } else { 0 };
         let size = e.metadata().map(|m| m.len()).unwrap_or(0);
@@ -230,7 +230,7 @@ fn run_photorec(image: String, outdir: String) -> Result<PhotoRecOut, String> {
     std::fs::create_dir_all(&outdir).map_err(|e| e.to_string())?;
     // PhotoRec's ncurses needs a terminfo db: embedded at compile time, laid
     // out as <tmp>/63/cygwin on first run (CGSecurity ships exactly this).
-    let termdir = std::env::temp_dir().join("pycarve-terminfo");
+    let termdir = std::env::temp_dir().join("surrect-terminfo");
     let term63 = termdir.join("63");
     let _ = std::fs::create_dir_all(&term63);
     let cf = term63.join("cygwin");
