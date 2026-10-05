@@ -150,9 +150,9 @@ function render() {
     render();
   }));
   const img = document.getElementById("img") as HTMLInputElement | null;
-  img?.addEventListener("input", () => { state.image = img.value; });
+  img?.addEventListener("input", () => { state.image = cleanPath(img.value); });
   const out = document.getElementById("out") as HTMLInputElement | null;
-  out?.addEventListener("input", () => { state.outdir = out.value; });
+  out?.addEventListener("input", () => { state.outdir = cleanPath(out.value) || "recovered"; });
   document.getElementById("browse")?.addEventListener("click", async () => {
     try {
       const { open } = await import("@tauri-apps/plugin-dialog");
@@ -174,14 +174,14 @@ function render() {
   }));
   app.querySelectorAll("[data-prev]").forEach(b => b.addEventListener("click", () => runPreview((b as HTMLElement).dataset.prev!)));
   const csrc = document.getElementById("csrc") as HTMLInputElement | null;
-  csrc?.addEventListener("input", () => { state.csrc = csrc.value; });
+  csrc?.addEventListener("input", () => { state.csrc = cleanPath(csrc.value); });
   const cdst = document.getElementById("cdst") as HTMLInputElement | null;
-  cdst?.addEventListener("input", () => { state.cdst = cdst.value; });
+  cdst?.addEventListener("input", () => { state.cdst = cleanPath(cdst.value); });
   document.getElementById("clone")?.addEventListener("click", () => runClone());
   const drive = document.getElementById("drive") as HTMLSelectElement | null;
   drive?.addEventListener("change", () => { state.driveSel = drive.value; });
   const ddst = document.getElementById("ddst") as HTMLInputElement | null;
-  ddst?.addEventListener("input", () => { state.cdst = ddst.value; });
+  ddst?.addEventListener("input", () => { state.cdst = cleanPath(ddst.value); });
   document.getElementById("scandrive")?.addEventListener("click", () => {
     if (!state.driveSel) return;
     state.image = `\\\\.\\${state.driveSel}`;  // keep the colon: \\.\C: is the drive
@@ -258,7 +258,8 @@ function parseOff(s: string): number {
 }
 
 async function runHexRead() {
-  const src = (document.getElementById("hsrc") as HTMLInputElement | null)?.value || state.hexSrc || state.image;
+  const raw = (document.getElementById("hsrc") as HTMLInputElement | null)?.value || state.hexSrc || state.image;
+  const src = cleanPath(raw);
   const offraw = (document.getElementById("hoff") as HTMLInputElement | null)?.value ?? String(state.hexOff);
   const off = parseOff(offraw);
   if (!src || !Number.isFinite(off)) { state.hexData = null; render(); return; }
@@ -281,6 +282,12 @@ async function runClone() {
 }
 
 function appendLog(s: string) { state.log += s + "\n"; }
+
+// Windows users paste paths with quotes ("C:\x") — strip them + whitespace
+// at the boundary so the engine always gets a clean path.
+function cleanPath(s: string) {
+  return s.trim().replace(/^["']+|["']+$/g, "").trim();
+}
 
 async function runCarve() {
   if (!state.image) return;

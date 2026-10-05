@@ -1739,8 +1739,17 @@ def main():
         return
     if not a.image:
         ap.error("image required (file or \\\\.\\X:) or use --clone SRC DST")
+    if not (a.outdir or "").strip():
+        a.outdir = "recovered"
+    else:
+        a.outdir = a.outdir.strip()
     only = a.only.split(",") if a.only else None
     audit_path = os.path.join(a.outdir, "audit.txt")
+    if os.path.isdir(a.image or ""):
+        print(f"'{a.image}' is a folder — Surrect reads drives (like \\\\.\\C:) and disk image")
+        print("files, not folders. To recover from the drive holding this folder, scan")
+        print("that drive instead (Copy disk first is the safest route).")
+        return
     try:
         results, total, audit = carve(a.image, a.outdir, only, audit_path, resume=a.resume)
     except FileNotFoundError:
@@ -1748,6 +1757,9 @@ def main():
         return
     except PermissionError:
         print(f"access denied opening '{a.image}' — right-click Surrect -> Run as administrator, then retry.")
+        return
+    except OSError as e:
+        print(f"cannot read '{a.image}': {e.strerror or e} (not a drive or image file?).")
         return
     print(f"scanned {total} bytes, {len(results)} files -> {a.outdir}/ (manifest.csv + audit.txt)")
     for fn, off, end, ext, chopped, size in results:
@@ -1766,6 +1778,9 @@ def main():
         return
     except PermissionError:
         print(f"access denied opening '{a.image}' — right-click Surrect -> Run as administrator, then retry.")
+        return
+    except OSError as e:
+        print(f"cannot read '{a.image}': {e.strerror or e} (not a drive or image file?).")
         return
     ndel = sum(1 for r in records if r["deleted"])
     print(f"FS ({fs}): {len(records)} records, {ndel} deleted")
