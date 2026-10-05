@@ -1726,7 +1726,14 @@ def main():
         print(str(is_admin()))
         return
     if a.clone:
-        r = clone_disk(a.clone[0], a.clone[1], a.block, a.retries, fresh=a.fresh)
+        try:
+            r = clone_disk(a.clone[0], a.clone[1], a.block, a.retries, fresh=a.fresh)
+        except FileNotFoundError:
+            print(f"cannot open '{a.clone[0]}' — no such drive or file (drives look like \\\\.\\C:).")
+            return
+        except PermissionError:
+            print(f"access denied opening '{a.clone[0]}' — right-click Surrect -> Run as administrator, then retry.")
+            return
         tag = f"resumed ({r['skipped']} skipped), " if r["resumed"] else ""
         print(f"cloned {r['total']} bytes: {tag}{r['good']}/{r['blocks']} blocks ok, {r['bad']} bad -> map {r['map']}")
         return
@@ -1734,7 +1741,14 @@ def main():
         ap.error("image required (file or \\\\.\\X:) or use --clone SRC DST")
     only = a.only.split(",") if a.only else None
     audit_path = os.path.join(a.outdir, "audit.txt")
-    results, total, audit = carve(a.image, a.outdir, only, audit_path, resume=a.resume)
+    try:
+        results, total, audit = carve(a.image, a.outdir, only, audit_path, resume=a.resume)
+    except FileNotFoundError:
+        print(f"cannot open '{a.image}' — no such drive or file (drives look like \\\\.\\C:).")
+        return
+    except PermissionError:
+        print(f"access denied opening '{a.image}' — right-click Surrect -> Run as administrator, then retry.")
+        return
     print(f"scanned {total} bytes, {len(results)} files -> {a.outdir}/ (manifest.csv + audit.txt)")
     for fn, off, end, ext, chopped, size in results:
         print(f"  {fn} off={off} size={size} [{'CHOPPED' if chopped else 'ok'}]")
@@ -1745,7 +1759,14 @@ def main():
             audit.append(line)
         with open(audit_path, "w") as af:
             af.write("\n".join(audit) + "\n")
-    fs, records, boot = fls_all(a.image)
+    try:
+        fs, records, boot = fls_all(a.image)
+    except FileNotFoundError:
+        print(f"cannot open '{a.image}' — no such drive or file (drives look like \\\\.\\C:).")
+        return
+    except PermissionError:
+        print(f"access denied opening '{a.image}' — right-click Surrect -> Run as administrator, then retry.")
+        return
     ndel = sum(1 for r in records if r["deleted"])
     print(f"FS ({fs}): {len(records)} records, {ndel} deleted")
     if a.fls_json:

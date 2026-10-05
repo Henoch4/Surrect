@@ -184,12 +184,12 @@ function render() {
   ddst?.addEventListener("input", () => { state.cdst = ddst.value; });
   document.getElementById("scandrive")?.addEventListener("click", () => {
     if (!state.driveSel) return;
-    state.image = `\\\\.\\${state.driveSel.replace(":", "")}`;
+    state.image = `\\\\.\\${state.driveSel}`;  // keep the colon: \\.\C: is the drive
     runCarve();
   });
   document.getElementById("imgdrive")?.addEventListener("click", async () => {
     if (!state.driveSel || !state.cdst) { appendLog("pick a drive and a destination file first."); render(); return; }
-    state.csrc = `\\\\.\\${state.driveSel.replace(":", "")}`;
+    state.csrc = `\\\\.\\${state.driveSel}`;
     await runClone();
     state.image = state.cdst;  // scan the fresh copy next
     state.srcTab = "file";
