@@ -16,6 +16,16 @@ const state = {
   csrc: "",
   cdst: "",
   cloning: false,
+  e01src: "",
+  e01busy: false,
+  raidMembers: "",
+  raidLevel: "5",
+  raidStripe: "65536",
+  raidRot: "LS",
+  raidMissing: "",
+  raidOrder: "",
+  raidBusy: false,
+  raidMsg: "",
   srcTab: "drive" as "drive" | "file",
   engine: "surrect" as "surrect" | "photorec",
   drives: [] as { letter: string; kind: string; size: string; health: string; temp: string }[],
@@ -169,6 +179,32 @@ function render() {
       <div class="card"><div class="row">
         <button class="btn primary" id="clone" ${!state.csrc || !state.cdst || state.cloning ? "disabled" : ""}>${state.cloning ? "Copying…" : "Start copying"}</button>
       </div></div>
+      <div class="card"><strong>Evidence files (.E01)</strong><p class="sub" style="margin:4px 0 8px">Check a forensic image's fingerprints, then open it as a normal disk copy.</p><div class="row">
+        <input id="e01" class="input" placeholder="evidence file (e.g. case.E01)" value="${state.e01src}" />
+        <button class="btn" id="e01verify" ${!state.e01src || state.e01busy ? "disabled" : ""}>Check fingerprints</button>
+        <button class="btn primary" id="e01open" ${!state.e01src || state.e01busy ? "disabled" : ""}>${state.e01busy ? "Opening…" : "Open as disk copy"}</button>
+      </div></div>
+      <div class="card"><strong>Rebuild a RAID set</strong><p class="sub" style="margin:4px 0 8px">Join member disks into one virtual disk (one missing disk tolerated on RAID 5), then recover from it.</p>
+      <div class="row">
+        <select id="raidlevel" class="input" style="min-width:110px">
+          <option value="0" ${state.raidLevel === "0" ? "selected" : ""}>RAID 0</option>
+          <option value="1" ${state.raidLevel === "1" ? "selected" : ""}>RAID 1</option>
+          <option value="5" ${state.raidLevel === "5" ? "selected" : ""}>RAID 5</option>
+        </select>
+        <input id="raidstripe" class="input" style="min-width:110px" placeholder="stripe bytes" value="${state.raidStripe}" />
+        <select id="raidrot" class="input" style="min-width:130px">
+          ${["LS", "RS", "LA", "RA"].map(r => `<option ${state.raidRot === r ? "selected" : ""}>${r}</option>`).join("")}
+        </select>
+        <input id="raidmissing" class="input" style="min-width:110px" placeholder="missing slot?" value="${state.raidMissing}" />
+      </div>
+      <div class="row" style="margin-top:8px">
+        <input id="raidmembers" class="input" style="min-width:280px" placeholder="member files, comma separated (MISSING for absent)" value="${state.raidMembers}" />
+      </div>
+      <div class="row" style="margin-top:8px">
+        <input id="raidorder" class="input" style="min-width:140px" placeholder="order e.g. 0,1,2" value="${state.raidOrder}" />
+        <button class="btn" id="raiddetect" ${!state.raidMembers || state.raidBusy ? "disabled" : ""}>Detect settings</button>
+        <button class="btn primary" id="raidbuild" ${!state.raidMembers || state.raidBusy ? "disabled" : ""}>${state.raidBusy ? "Working…" : "Assemble & scan"}</button>
+      </div>${state.raidMsg ? `<p class="sub" style="margin:8px 0 0">${state.raidMsg}</p>` : ""}</div>
       <div class="log">${state.log || "No output yet."}</div>`;
   } else {
     const nDel = state.mft.filter(m => m.deleted).length;
@@ -233,6 +269,58 @@ function render() {
   const cdst = document.getElementById("cdst") as HTMLInputElement | null;
   cdst?.addEventListener("input", () => { state.cdst = cleanPath(cdst.value); });
   document.getElementById("clone")?.addEventListener("click", () => runClone());
+  const e01 = document.getElementById("e01") as HTMLInputElement | null;
+  e01?.addEventListener("input", () => { state.e01src = cleanPath(e01.value); });
+  document.getElementById("e01verify")?.addEventListener("click", () => runE01Verify());
+  document.getElementById("e01open")?.addEventListener("click", () => runE01Open());
+  const syncRaid = () => {
+    const g = (id: string) => (document.getElementById(id) as HTMLInputElement | HTMLSelectElement | null)?.value ?? "";
+    state.raidLevel = g("raidlevel") || "5";
+    state.raidStripe = g("raidstripe") || "65536";
+    state.raidRot = g("raidrot") || "LS";
+    state.raidMissing = g("raidmissing").trim();
+    state.raidMembers = cleanPath(g("raidmembers"));
+    state.raidOrder = g("raidorder").trim();
+  };
+  document.getElementById("raiddetect")?.addEventListener("click", async () => {
+    syncRaid();
+    if (!state.raidMembers) return;
+    state.raidBusy = true; state.raidMsg = "Trying stripe sizes and layouts…"; render();
+    try {
+      const out = await invoke<string>("run_raid_detect", { members: state.raidMembers });
+      const lines = out.split("\n").filter(l => l.trim().startsWith("{"));
+      if (!lines.length) throw new Error("no candidates — probably not RAID5");
+      const top = JSON.parse(lines[0]);
+      state.raidStripe = String(top.stripe ?? state.raidStripe);
+      state.raidRot = top.rotation ?? state.raidRot;
+      state.raidOrder = (top.order ?? []).join(",");
+      state.raidMsg = `Best guess: stripe ${state.raidStripe}, ${state.raidRot}, order ${state.raidOrder} (score ${top.score}). Review, then Assemble.`;
+      appendLog("raid detect top-3:\n" + lines.slice(0, 3).join("\n"));
+    } catch (e) { state.raidMsg = String(e); }
+    state.raidBusy = false; render();
+  });
+  document.getElementById("raidbuild")?.addEventListener("click", async () => {
+    syncRaid();
+    if (!state.raidMembers) return;
+    state.raidBusy = true; render();
+    try {
+      const n = state.raidMembers.split(",").length;
+      const order = state.raidOrder || Array.from({ length: n }, (_, i) => i).join(",");
+      const missing = state.raidMissing === "" ? null : Number(state.raidMissing);
+      const res = await invoke<string>("run_raid_build", {
+        level: Number(state.raidLevel), members: state.raidMembers, order,
+        stripe: Number(state.raidStripe) || 65536, rotation: state.raidRot,
+        missing, outdir: state.outdir || "recovered",
+      });
+      appendLog(res);
+      const m = res.match(/virtual image: (\S+)/);
+      if (m) {
+        state.image = m[1]; state.srcTab = "file"; state.view = "source";
+        state.raidMsg = "Virtual disk ready — press Find my files.";
+      }
+    } catch (e) { state.raidMsg = String(e); }
+    state.raidBusy = false; render();
+  });
   document.getElementById("doprint")?.addEventListener("click", () => window.print());
   document.getElementById("casesave")?.addEventListener("click", () => {
     const inp = document.getElementById("casename") as HTMLInputElement | null;
@@ -405,6 +493,34 @@ async function runClone() {
     appendLog(res);
   } catch (e) { appendLog(String(e)); }
   state.cloning = false; render();
+}
+
+async function runE01Verify() {
+  if (!state.e01src) return;
+  state.e01busy = true; render();
+  appendLog(`Checking fingerprints of "${state.e01src}"…`);
+  render();
+  try {
+    const res = await invoke<string>("run_e01_verify", { image: state.e01src });
+    appendLog(res);
+  } catch (e) { appendLog(String(e)); }
+  state.e01busy = false; render();
+}
+
+async function runE01Open() {
+  if (!state.e01src) return;
+  state.e01busy = true; render();
+  appendLog(`Opening "${state.e01src}" as a disk copy…`);
+  render();
+  try {
+    const r = await invoke<{ log: string; raw: string }>("run_e01_export", { image: state.e01src, outdir: state.outdir || "recovered" });
+    appendLog(r.log);
+    state.image = r.raw;  // the raw copy becomes the recovery source
+    state.srcTab = "file";
+    state.view = "source";
+    appendLog(`Ready — now press Find my files to recover from the copy.`);
+  } catch (e) { appendLog(String(e)); }
+  state.e01busy = false; render();
 }
 
 function appendLog(s: string) { state.log += s + "\n"; }

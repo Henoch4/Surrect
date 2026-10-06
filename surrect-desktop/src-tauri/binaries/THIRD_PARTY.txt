@@ -1,8 +1,8 @@
 THIRD-PARTY SOFTWARE IN THIS APP
 ===============================
 Surrect bundles its own engine (surrect, written from scratch for this
-project) side-by-side with the genuine, unmodified PhotoRec binary.
-The two programs are separate executables and never share code
+project) side-by-side with genuine, unmodified third-party binaries.
+The programs are separate executables and never share code
 ("mere aggregation").
 
 1) PhotoRec 7.2 - photorec-x86_64-pc-windows-msvc.exe + cyg*.dll
@@ -17,6 +17,17 @@ The two programs are separate executables and never share code
    GPL compliance: the complete corresponding source is available at
    the URL above. This notice + COPYING.txt ship with the app.
 
-2) surrect (our engine) - surrect-x86_64-pc-windows-msvc.exe
+2) ewf-tools 20230405 (libewf) - ewfverify/ewfexport/ewfinfo/ewfacquire
+   *-x86_64-pc-windows-msvc.exe + libewf.dll + zlib.dll
+   Copyright (C) Joachim Metz and contributors, https://github.com/libyal/libewf
+   License: GNU Lesser General Public License v3 or later (see
+   COPYING.ewf.txt + COPYING.LESSER.ewf.txt next to this file).
+   Binary origin: https://github.com/alpine-sec/ewf-tools/releases/tag/v20230405
+   (ewftools-x64.zip, unmodified; SHA-256 verified at staging:
+   3da1870e65d269aa2e80995b0fef8ce8c82146ab809c06e70904081b94a8d1c0).
+   LGPL compliance: unmodified binaries + license texts ship with the app;
+   library source at https://github.com/libyal/libewf.
+
+3) surrect (our engine) - surrect-x86_64-pc-windows-msvc.exe
    Written from scratch for Surrect. Studied TestDisk/Scalpel/Sleuth Kit
    sources as references only; contains no third-party code.

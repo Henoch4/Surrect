@@ -145,6 +145,8 @@ def _scan_buf(buf, base, cpos, sigs):
     Emits hits with off >= cpos (overlap tail belongs to the previous chunk);
     near-edge candidates are returned for readat fallback."""
     hits, dropped, edge = [], 0, []
+    if buf.count(0) == len(buf):
+        return hits, dropped, edge  # all zeros: no signature can match
     for idx, (ext, hdr, ftr, mx, mode) in enumerate(sigs):
         s = 0
         while True:
@@ -223,8 +225,8 @@ class ImgReader:
         if self.total is None:
             return self._scan_stream(sigs)
         workers = workers or max(1, min(8, (os.cpu_count() or 4)))
-        if workers <= 1 or self.total < 64 * MiB:
-            return self._scan_stream(sigs)
+        if workers <= 1 or (self.total or 0) < 256 * MiB:
+            return self._scan_stream(sigs)  # spawn costs ~1s: only parallelize big jobs
         import concurrent.futures
         ranges = []
         pos = 0

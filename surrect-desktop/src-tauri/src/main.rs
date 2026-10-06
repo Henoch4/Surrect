@@ -305,6 +305,53 @@ fn run_photorec(image: String, outdir: String) -> Result<PhotoRecOut, String> {
     Ok(PhotoRecOut { log, dir: best })
 }
 
+#[derive(Serialize)]
+struct E01Out {
+    log: String,
+    raw: String,
+}
+
+#[tauri::command]
+fn run_e01_verify(image: String) -> Result<String, String> {
+    // Genuine ewfverify (Joachim Metz libewf tools): recomputes MD5/SHA1 over
+    // the evidence and compares with stored hashes. Verbatim output = the proof.
+    let bin = resolve_bin("ewfverify").ok_or("ewfverify sidecar not found")?;
+    run_bin(&bin, &[&image], None, &[])
+}
+
+#[tauri::command]
+fn run_e01_export(image: String, outdir: String) -> Result<E01Out, String> {
+    // Genuine ewfexport to raw: <outdir>/<stem>.raw, then carve-ready.
+    let bin = resolve_bin("ewfexport").ok_or("ewfexport sidecar not found")?;
+    std::fs::create_dir_all(&outdir).map_err(|e| e.to_string())?;
+    let stem = std::path::Path::new(&image)
+        .file_stem().and_then(|s| s.to_owned().into_string().ok())
+        .unwrap_or_else(|| "exported".to_string());
+    let target = std::path::Path::new(&outdir).join(&stem);
+    let target_s = target.to_string_lossy().to_string();
+    let log = run_bin(&bin, &["-f", "raw", "-t", &target_s, "-S", "0", "-o", "0", "-u", "-q", &image], Some(&outdir), &[])?;
+    let raw = target.with_extension("raw").to_string_lossy().to_string();
+    Ok(E01Out { log, raw })
+}
+
+#[tauri::command]
+fn run_raid_detect(members: String) -> Result<String, String> {
+    run_sidecar(&["--raid-detect", "--members", &members])
+}
+
+#[tauri::command]
+fn run_raid_build(level: u32, members: String, order: String, stripe: u64, rotation: String, missing: Option<u32>, outdir: String) -> Result<String, String> {
+    let level_s = match level { 0 => "0", 1 => "1", _ => "5" }.to_string();
+    let stripe_s = stripe.to_string();
+    let missing_s = missing.map(|m| m.to_string()).unwrap_or_default();
+    let mut args: Vec<&str> = vec!["--raid", &level_s, "--members", &members,
+        "--order", &order, "--stripe", &stripe_s, "--rotation", &rotation, "-o", &outdir];
+    if missing.is_some() {
+        args.extend(["--missing", &missing_s]);
+    }
+    run_sidecar(&args)
+}
+
 #[tauri::command]
 fn run_clone(image: String, dst: String, block: u64, retries: u32) -> Result<String, String> {
     run_sidecar(&[&"--clone".to_string(), &image, &dst,
@@ -368,7 +415,7 @@ fn run_icat(image: String, off: u64, outdir: String) -> Result<String, String> {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![run_carve, list_results, read_audit, run_fls, run_icat, run_fcat, read_head, read_at, write_file, run_clone, list_drives, run_photorec])
+        .invoke_handler(tauri::generate_handler![run_carve, list_results, read_audit, run_fls, run_icat, run_fcat, read_head, read_at, write_file, run_clone, list_drives, run_photorec, run_e01_verify, run_e01_export, run_raid_detect, run_raid_build])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

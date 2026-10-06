@@ -17,7 +17,7 @@
     "active": true,
     "targets": "all",
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico", "icons/icon.icns"],
-    "externalBin": ["binaries/surrect", "binaries/photorec"],
+    "externalBin": ["binaries/surrect", "binaries/photorec", "binaries/ewfverify", "binaries/ewfexport", "binaries/ewfinfo", "binaries/ewfacquire"],
     "resources": [
       "binaries/63/*",
       "binaries/cygwin1.dll",
@@ -27,7 +27,12 @@
       "binaries/cygncursesw-10.dll",
       "binaries/cyggcc_s-seh-1.dll",
       "binaries/cygewf-2.dll",
+      "binaries/libewf.dll",
+      "binaries/zlib.dll",
       "binaries/COPYING.txt",
+      "binaries/COPYING.ewf.txt",
+      "binaries/COPYING.LESSER.ewf.txt",
+      "binaries/LICENSE.ewf.txt",
       "binaries/THIRD_PARTY.txt"
     ]
   }
