@@ -63,8 +63,8 @@ function render() {
         return `<option value="${d.letter}" ${state.driveSel === d.letter ? "selected" : ""}>${dot} ${d.letter} — ${d.kind} ${gb} (${d.health}${tmp})</option>`;
       }).join("");
       body = `
-      <h1>Where are your lost files?</h1><p class="sub">Pick the drive, like Recuva does. ${state.isAdmin ? "Ready — this app can read drives now." : "Needs <strong>Run as administrator</strong> before it can read drives."}</p>
-      ${state.isAdmin ? "" : `<div class="card" style="border-color:var(--danger);background:var(--danger-fill);color:var(--on-danger)"><strong>Not running as administrator</strong> — Windows will block every drive read. Close Surrect, right-click it → <strong>Run as administrator</strong>, then come back. (Disk image files work without it.)</div>`}
+      <h1>Where are your lost files?</h1><p class="sub">Pick the drive, like Recuva does. ${state.isAdmin ? "Ready — this app can read drives now." : "Tip: live drives need a quick restart as administrator — everything else works as-is."}</p>
+      ${state.isAdmin ? "" : `<div class="card" style="border-color:var(--primary);background:var(--info-fill);color:var(--on-info)">💡 <strong>Heads up, no rush:</strong> you're running normally, which is perfectly fine. Only <strong>live drive</strong> reading needs administrator rights — close Surrect, right-click it → <strong>Run as administrator</strong>, and come back whenever. Disk copies work right now, no restart needed.</div>`}
       ${tabs}
       ${engineTabs}
       <div class="card"><div class="row">
@@ -303,8 +303,8 @@ async function runCarve() {
   }
   state.view = "scan"; state.scanning = true; state.log = ""; render();
   if (state.image.startsWith("\\\\.\\") && !state.isAdmin) {
-    appendLog("Heads up: you're not running as administrator, so Windows will likely block this drive.");
-    appendLog("Close Surrect, right-click it → Run as administrator, then retry. Trying anyway…");
+    appendLog("Quick note: live drives open best as administrator — this attempt may come back empty, and that's normal.");
+    appendLog("Whenever you're ready: close Surrect, right-click it → Run as administrator, and try again.");
     render();
   }
   if (state.engine === "photorec") {
