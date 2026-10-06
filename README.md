@@ -1,73 +1,78 @@
 # Surrect
 
-**File recovery that proves itself.** A signature carver, filesystem recovery engine, and fragment reassembly tool — CLI and desktop app — with a measured scoreboard instead of marketing claims.
+**Bring your lost files back — and prove every one.**
 
-## The 1TB Gauntlet (measured, not claimed)
+Deleted photos. A formatted drive. A memory card that went silent. Surrect finds what's left and hands it back with its original name, its folder, and a fingerprint proving it's intact.
 
-Surrect was validated against a synthetic 1-terabyte sparse image seeded with 200 known objects — 160 contiguous files across 11 formats (10 planted past the 900GB mark), 20 deliberately fragmented MP4s (box-boundary splits, 1–16MB zero gaps), and 20 decoys that must be rejected. The full harness lives in [`tests/make_gauntlet.py`](tests/make_gauntlet.py) and reproduces from a fixed seed.
+## Install (Windows, 64-bit)
 
-| Metric | Result |
+**[Download Surrect from Releases](../../releases)** — pick the setup `.exe`, click through, done. No Python, no building, no tech skills needed.
+
+## What it does for you
+
+- **Finds deleted files with their real names and folders** — not `file0001.jpg`, but `/photos/beach.jpg`, including what's in the Recycle Bin's blind spot.
+- **Digs files out of raw disk bytes** — even when Windows says the drive is empty, unformatted, or "needs formatting."
+- **Pieces broken files back together** — split videos and archives get reassembled and verified before you ever see them.
+- **Recovers straight from the drive, Recuva-style** — or copies the whole drive first and works from the copy, so the original is never touched.
+- **Shows its work** — every recovered file carries a SHA-256 fingerprint, and a full report logs each decision. No black boxes.
+- **Two engines inside** — Surrect's own (fast, remembers names) plus the famous PhotoRec (finds 480+ file types). Pick per job.
+
+## Proven, not promised
+
+Surrect was tested against a 1-terabyte image seeded with 200 known objects — everyday files, deliberately fragmented videos, and 20 fakes designed to fool it:
+
+| What was measured | Result |
 |---|---|
-| Recall | **179/180 = 99.4%** |
-| Precision | **179/180 = 99.4%** (0 decoys carved) |
-| Fragmented MP4 reassembly | **20/20**, byte-exact, gaps up to 15MB |
-| Files past 900GB | **32/32** (64-bit offsets proven) |
-| Scan | 1,099,511,627,776 bytes end-to-end |
+| Files found | **179/180 (99.4%)** |
+| False alarms | **1** (a known edge case, documented) |
+| Broken videos reassembled | **20/20, byte-perfect** |
+| Files past the 900GB mark | **32/32** |
 
-The single miss is a documented limitation: one JPEG whose random test payload contained a premature `FF D9` byte pair; footer-first carving stops at the first plausible marker. Real JPEG entropy data escapes those bytes. Receipts: [`score.json`](score.json), [`groundtruth.json`](groundtruth.json).
+Details: [`score.json`](score.json). The one miss is an honest, documented limitation (a JPEG whose test data contained a premature end-marker).
 
-## What it does
+## Screens
 
-- **Signature carving** — 29 formats with buffer-direct validators (PNG IHDR, BMP DIB, RIFF/MP4 box walks, PE, ELF, TAR checksum, ICO directory, ID3 syncsafe…). Format-aware sizing: exact sizes from SQLite/ICO headers; a 64KB zero-gap stop ends headerless carves instead of ballooning them.
-- **Filesystem recovery with names** — NTFS (MFT walk, data runs, folder paths, deleted flags), FAT12/16/32 (LFN, `0xE5` deleted), exFAT (Unicode names, NoFatChain). Extract via `icat`/`rec`/`fcat`.
-- **Fragment reassembly** — MP4 box-boundary stitching with backtracking validation and decoy rejection (a valid MP4 has exactly one `ftyp`); ZIP CRC-proven bridging over intruding files with repack.
-- **Live drives** — Recuva-style raw drive reads (`\\.\E:`), SMART health badges, hex viewer, and a resume-able ddrescue-style imager whose `.map` skips good blocks and retries bad ones after interruption.
-- **Checkpointing** — phase-1 scan results persist to `hits.json`; any interruption (crash, reboot, patch) resumes in seconds.
-- **Proof chain** — `manifest.csv` with SHA-256 per file, `audit.txt` decision log, gauntlet `score.json`.
+**Start** (pick a drive or disk copy) → **Recover** (watch it work) → **My files** (preview + fingerprints) → **Deleted** (recently deleted, one-click recover) → **Report** (the proof log) → **Copy disk** (safe full copy with retries) → **Inspect** (expert byte view, read-only).
 
-## Desktop app
-
-Tauri 2 shell with two engines: the native Surrect engine, plus **genuine PhotoRec 7.2** as a bundled sidecar (separate GPL binary, mere aggregation — see [`THIRD_PARTY.txt`](surrect-desktop/src-tauri/binaries/THIRD_PARTY.txt)). Live drive picker, scan/preview/hash flow, forensics listing, imaging view, hex viewer.
-
-Build from source (Windows, 64-bit):
+## Prefer typing?
 
 ```
-# engine sidecar (needs Python 3.11+)
-py -m PyInstaller --onefile --noconsole --distpath surrect-desktop/src-tauri/binaries ^
+surrect.exe C: -o out --frag        # recover a drive, reassemble broken files
+surrect.exe image.dd --fls          # list deleted files with real paths
+surrect.exe image.dd --rec 5        # pull out one file by its record number
+surrect.exe image.dd --fcat "/docs/a.txt"  # pull out a FAT/exFAT file by path
+surrect.exe --clone \\.\E: rescue.img      # copy a sick drive first (resumable)
+surrect.exe --list-drives           # drives + health check
+```
+
+## Build it yourself
+
+You don't need to — grab the installer above. But everything is reproducible from source:
+
+```
+# 1. The recovery engine becomes a single file (needs Python 3.11+)
+py -m PyInstaller --onefile --noconsole --distpath surrect-desktop\src-tauri\binaries ^
     --name surrect-x86_64-pc-windows-msvc surrect.py
 
-# PhotoRec sidecar: download testdisk-7.2.win64.zip from cgsecurity.org,
-# copy photorec_win.exe as surrect-desktop/src-tauri/binaries/photorec-x86_64-pc-windows-msvc.exe
-# plus its cyg*.dll dependencies and 63/cygwin terminfo (see THIRD_PARTY.txt)
+# 2. The PhotoRec sidecar: download testdisk-7.2.win64.zip from cgsecurity.org,
+#    copy photorec_win.exe + its dlls + 63/cygwin terminfo into src-tauri\binaries
+#    (provenance documented in THIRD_PARTY.txt)
 
-cd surrect-desktop
-npm install
-npx tauri build   # -> MSI + NSIS installers in src-tauri/target/release/bundle
+cd surrect-desktop && npm install && npx tauri build
+# -> MSI + setup exe in src-tauri\target\release\bundle
 ```
 
-## CLI quick start
-
-```
-py surrect.py image.dd -o out --frag          # carve + reassemble
-py surrect.py image.dd --fls                  # list files with paths (NTFS/FAT/exFAT)
-py surrect.py image.dd --rec 5                # extract NTFS MFT record #5
-py surrect.py image.dd --fcat "/docs/a.txt"   # extract FAT/exFAT file by path
-py surrect.py --clone \\.\E: rescue.img       # image with retry map (resumable)
-py surrect.py --list-drives                   # drives + SMART health
-```
-
-## Testing
-
-The regression suite in [`tests/`](tests) locks every bug the gauntlet hunt uncovered — WAV-embedded ICO false positives, the MP4 4-byte prefix loss, the stitcher objective that preferred truncated files, max-size ballooning on wiped space, checkpoint resume parity, decoy rejection, zero-gap stitching:
+Run the permanent regression suite (every bug the 1TB test ever found is locked behind one):
 
 ```
 py tests\test_mp4frag.py
 py tests\test_carve_parity.py
 py tests\test_balloon.py
+py tests\test_badpaths.py
 ```
+
+Reproduce the 1TB gauntlet yourself: `py tests\make_gauntlet.py`, scan it, `py tests\score_gauntlet.py`.
 
 ## License
 
-Surrect's own code is MIT licensed — see [LICENSE](LICENSE). The bundled PhotoRec 7.2 binary is GPL v2+ (Christophe GRENIER, cgsecurity.org), shipped unmodified as a separate program with its license and source pointer in `THIRD_PARTY.txt`.
-
-Surrect studied TestDisk/PhotoRec, Scalpel, Foremost, The Sleuth Kit, libfsntfs and NTFS-3G as references; it contains no third-party code.
+Surrect's own code is MIT — see [LICENSE](LICENSE). The app can bundle PhotoRec 7.2 (GPL v2+, Christophe GRENIER) as a separate program; see `THIRD_PARTY.txt` for attribution. Surrect learned from TestDisk/PhotoRec, Scalpel, Foremost, The Sleuth Kit, libfsntfs and NTFS-3G as references; it contains no third-party code.
