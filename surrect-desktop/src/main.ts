@@ -27,12 +27,44 @@ const state = {
   hexSize: 4096,
   hexData: null as null | { b64: string; size: number; truncated: boolean },
   frag: true,
+  projMsg: "",
+  patch: null as null | { fn: string; off: string; hex: string; msg: string },
 };
 
 const app = document.getElementById("app")!;
 
 function nav(label: string, v: View) {
   return `<button class="nav-btn ${state.view === v ? "active" : ""}" data-view="${v}">${label}</button>`;
+}
+
+type SavedCase = { image: string; outdir: string; engine: "surrect" | "photorec"; srcTab: "drive" | "file"; savedAt: string };
+
+function loadCases(): Record<string, SavedCase> {
+  try {
+    return JSON.parse(localStorage.getItem("surrect.cases") || "{}");
+  } catch { return {}; }
+}
+
+function projCard() {
+  const cases = loadCases();
+  const names = Object.keys(cases);
+  const rows = names.map(n =>
+    `<div class="row" style="margin-top:4px"><span style="flex:1">${n} <span class="badge">${cases[n].engine}</span></span><button class="btn" data-case="${n}">Open</button><button class="btn" data-casedel="${n}">Forget</button></div>`).join("");
+  return `<div class="card"><strong>Saved cases</strong><p class="sub" style="margin:4px 0 8px">Pick up where you left off — restores your source, engine and file list.</p>
+    <div class="row"><input id="casename" class="input" placeholder="case name (e.g. USB stick)" /><button class="btn" id="casesave">Save this case</button></div>
+    ${rows || `<p class="sub">No saved cases yet.</p>`}
+    <div class="row" style="margin-top:8px"><button class="btn" id="casebackup">Copy backup code</button><button class="btn" id="caserestore">Restore from code</button></div>
+    <textarea id="caseio" class="input" style="min-width:100%;height:56px;margin-top:8px" placeholder="backup code appears here — keep it somewhere safe"></textarea>
+    ${state.projMsg ? `<p class="sub" style="margin:4px 0 0">${state.projMsg}</p>` : ""}</div>`;
+}
+
+async function openCase(name: string) {
+  const c = loadCases()[name];
+  if (!c) return;
+  state.image = c.image; state.outdir = c.outdir; state.engine = c.engine; state.srcTab = c.srcTab;
+  state.projMsg = `Opened “${name}” — file list reloaded from disk.`;
+  await refreshResults();
+  render();
 }
 
 function shell(body: string) {
@@ -74,7 +106,8 @@ function render() {
       <div class="card"><p class="sub" style="margin:0 0 8px">Safer: copy the drive first, then recover from the copy — the original stays untouched.</p><div class="row">
         <input id="ddst" class="input" placeholder="C:\\rescue\\drive-e.img" value="${state.cdst}" />
         <button class="btn" id="imgdrive" ${!state.driveSel || state.cloning ? "disabled" : ""}>${state.cloning ? "Copying…" : "Copy first"}</button>
-      </div></div>`;
+      </div></div>
+      ${projCard()}`;
   } else {
       body = `
       <h1>Already have a disk copy?</h1><p class="sub">Use a disk image file — the safest way to recover.</p>
@@ -87,7 +120,8 @@ function render() {
       <div class="card"><div class="row">
         <input id="out" class="input" value="${state.outdir}" />
         <button class="btn primary" id="start" ${!state.image || state.scanning ? "disabled" : ""}>Find my files</button>
-      </div></div>`;
+      </div></div>
+      ${projCard()}`;
   }
   } else if (state.view === "hex") {
     const dump = state.hexData ? hexDump(state.hexData.b64, state.hexOff) : "Pick a source and press Show — live drives need admin rights.";
@@ -116,10 +150,11 @@ function render() {
       <div class="log">${state.log || "No output yet."}</div>`;
   } else if (state.view === "results") {
     const rows = state.results.map(r =>
-      `<tr><td><span class="badge ok">${r.fn.split(".").pop()}</span> ${r.fn}</td><td>${r.off}</td><td>${r.size}</td><td><code>${r.sha ? r.sha.slice(0, 12) : "—"}</code></td><td>${r.chopped ? "Cut short" : "Good"}</td><td><button class="btn" data-prev="${r.fn}">Preview</button></td></tr>`).join("");
+      `<tr><td><span class="badge ok">${r.fn.split(".").pop()}</span> ${r.fn}</td><td>${r.off}</td><td>${r.size}</td><td><code>${r.sha ? r.sha.slice(0, 12) : "—"}</code></td><td>${r.chopped ? "Cut short" : "Good"}</td><td><button class="btn" data-prev="${r.fn}">Preview</button> <button class="btn" data-patch="${r.fn}">Patch</button></td></tr>`).join("");
     const pv = state.preview ? previewCard() : "";
-    body = `<h1>Found files (${state.results.length})</h1><p class="sub">Everything recovered — each with a fingerprint proving it's intact.</p>
-      <div class="card"><table class="grid"><thead><tr><th>File</th><th>Found at</th><th>Size</th><th>Fingerprint</th><th>Health</th><th></th></tr></thead><tbody>${rows || `<tr><td colspan="6">Nothing here yet — recover something first.</td></tr>`}</tbody></table></div>${pv}`;
+    const pc = state.patch ? patchCard() : "";
+    body = `<h1>Found files (${state.results.length})</h1><p class="sub">Everything recovered — each with a fingerprint proving it's intact. Patch repairs bytes of a <em>recovered copy</em>; your source is never touched.</p>
+      <div class="card"><table class="grid"><thead><tr><th>File</th><th>Found at</th><th>Size</th><th>Fingerprint</th><th>Health</th><th></th></tr></thead><tbody>${rows || `<tr><td colspan="6">Nothing here yet — recover something first.</td></tr>`}</tbody></table></div>${pv}${pc}`;
   } else if (state.view === "forensics") {
     const rows = state.mft.map(m =>
       `<tr><td><span class="badge">${m.fs || "?"}</span></td><td>${m.isDir ? "folder" : "file"}</td><td>${m.name}</td><td>${m.size}</td><td>${m.deleted ? `<span class="badge del">deleted</span>` : ""}</td><td><button class="btn" data-x="${m.off}::${m.name}::${m.fs}">Recover</button></td></tr>`).join("");
@@ -136,7 +171,16 @@ function render() {
       </div></div>
       <div class="log">${state.log || "No output yet."}</div>`;
   } else {
+    const nDel = state.mft.filter(m => m.deleted).length;
+    const repRows = state.results.map(r =>
+      `<tr><td>${r.fn}</td><td>${r.size}</td><td><code>${r.sha ? r.sha.slice(0, 16) : "—"}</code></td><td>${r.chopped ? "Cut short" : "Good"}</td></tr>`).join("");
     body = `<h1>Report</h1><p class="sub">The full proof log: every decision the recovery made, line by line.</p>
+      <div class="card"><div class="row"><button class="btn primary" id="doprint">Print report (save as PDF)</button></div></div>
+      <div class="card" id="printreport"><h2>Surrect recovery report</h2>
+      <p>Source: <code>${state.image || "—"}</code><br/>Engine: ${state.engine} &nbsp; Date: ${new Date().toLocaleString()}<br/>
+      Files recovered: ${state.results.length} &nbsp; Deleted files listed: ${state.mft.length} (${nDel} deleted)</p>
+      <table class="grid"><thead><tr><th>File</th><th>Size</th><th>Fingerprint</th><th>Health</th></tr></thead>
+      <tbody>${repRows || `<tr><td colspan="4">No files recovered yet.</td></tr>`}</tbody></table></div>
       <div class="log">${state.audit || "No report yet — recover something first."}</div>`;
   }
   app.innerHTML = shell(body);
@@ -178,11 +222,56 @@ function render() {
     else runIcat(Number(off));
   }));
   app.querySelectorAll("[data-prev]").forEach(b => b.addEventListener("click", () => runPreview((b as HTMLElement).dataset.prev!)));
+  app.querySelectorAll("[data-patch]").forEach(b => b.addEventListener("click", () => {
+    state.patch = { fn: (b as HTMLElement).dataset.patch!, off: "0", hex: "", msg: "" };
+    render();
+  }));
+  document.getElementById("papply")?.addEventListener("click", () => runPatch());
+  document.getElementById("pcancel")?.addEventListener("click", () => { state.patch = null; render(); });
   const csrc = document.getElementById("csrc") as HTMLInputElement | null;
   csrc?.addEventListener("input", () => { state.csrc = cleanPath(csrc.value); });
   const cdst = document.getElementById("cdst") as HTMLInputElement | null;
   cdst?.addEventListener("input", () => { state.cdst = cleanPath(cdst.value); });
   document.getElementById("clone")?.addEventListener("click", () => runClone());
+  document.getElementById("doprint")?.addEventListener("click", () => window.print());
+  document.getElementById("casesave")?.addEventListener("click", () => {
+    const inp = document.getElementById("casename") as HTMLInputElement | null;
+    const name = (inp?.value || "").trim();
+    if (!name) { state.projMsg = "Give the case a name first."; render(); return; }
+    const cases = loadCases();
+    cases[name] = { image: state.image, outdir: state.outdir, engine: state.engine, srcTab: state.srcTab, savedAt: new Date().toISOString() };
+    try {
+      localStorage.setItem("surrect.cases", JSON.stringify(cases));
+      state.projMsg = `Saved “${name}”.`;
+    } catch { state.projMsg = "Couldn't save (browser storage full?)."; }
+    render();
+  });
+  app.querySelectorAll("[data-case]").forEach(b => b.addEventListener("click", () => openCase((b as HTMLElement).dataset.case!)));
+  app.querySelectorAll("[data-casedel]").forEach(b => b.addEventListener("click", () => {
+    const cases = loadCases();
+    delete cases[(b as HTMLElement).dataset.casedel!];
+    try { localStorage.setItem("surrect.cases", JSON.stringify(cases)); } catch { /* ignore */ }
+    render();
+  }));
+  document.getElementById("casebackup")?.addEventListener("click", () => {
+    const ta = document.getElementById("caseio") as HTMLTextAreaElement | null;
+    if (ta) { ta.value = JSON.stringify(loadCases()); ta.select(); }
+    state.projMsg = "Backup code ready above — copy it somewhere safe.";
+    render();
+    const ta2 = document.getElementById("caseio") as HTMLTextAreaElement | null;
+    if (ta2) ta2.value = JSON.stringify(loadCases());
+  });
+  document.getElementById("caserestore")?.addEventListener("click", () => {
+    const ta = document.getElementById("caseio") as HTMLTextAreaElement | null;
+    try {
+      const incoming = JSON.parse(ta?.value || "");
+      const cases = loadCases();
+      for (const k of Object.keys(incoming)) cases[k] = incoming[k];
+      localStorage.setItem("surrect.cases", JSON.stringify(cases));
+      state.projMsg = "Backup restored.";
+    } catch { state.projMsg = "That code doesn't look like a Surrect backup."; }
+    render();
+  });
   const drive = document.getElementById("drive") as HTMLSelectElement | null;
   drive?.addEventListener("change", () => { state.driveSel = drive.value; });
   const ddst = document.getElementById("ddst") as HTMLInputElement | null;
@@ -245,6 +334,38 @@ function previewCard() {
     inner = `<div class="log">${hexDump(p.b64, 0)}${p.truncated ? "… (truncated)" : ""}</div>`;
   }
   return `<div class="card"><div class="row"><strong>${p.fn}</strong><span class="badge">${p.size} bytes</span></div><div style="margin-top:8px">${inner}</div></div>`;
+}
+
+async function runPatch() {
+  const p = state.patch;
+  if (!p) return;
+  const offEl = document.getElementById("poff") as HTMLInputElement | null;
+  const hexEl = document.getElementById("phex") as HTMLInputElement | null;
+  const off = Number((offEl?.value ?? p.off).trim());
+  const hex = (hexEl?.value ?? p.hex).trim();
+  if (!Number.isFinite(off) || off < 0 || !hex) {
+    state.patch = { ...p, msg: "Give a position (0 or more) and some hex bytes." };
+    render();
+    return;
+  }
+  try {
+    const r = await invoke<{ sha: string; size: number }>("write_file", { outdir: state.outdir, file: p.fn, off: Math.floor(off), hexdata: hex });
+    state.patch = { ...p, msg: `Patched — new fingerprint ${r.sha.slice(0, 16)}… (${r.size} bytes).` };
+    await refreshResults();
+    state.preview = null;
+  } catch (e) { state.patch = { ...p, msg: String(e) }; }
+  render();
+}
+
+function patchCard() {
+  const p = state.patch!;
+  return `<div class="card"><div class="row"><strong>Repair ${p.fn}</strong><span class="badge">copy only — source untouched</span></div>
+    <div class="row" style="margin-top:8px">
+      <input id="poff" class="input" style="min-width:140px" placeholder="position (e.g. 0)" value="${p.off}" />
+      <input id="phex" class="input" style="min-width:280px" placeholder="new bytes as hex (e.g. FF D8)" value="${p.hex}" />
+      <button class="btn primary" id="papply">Apply patch</button>
+      <button class="btn" id="pcancel">Close</button>
+    </div>${p.msg ? `<p class="sub" style="margin:8px 0 0">${p.msg}</p>` : ""}</div>`;
 }
 
 async function runPreview(fn: string) {

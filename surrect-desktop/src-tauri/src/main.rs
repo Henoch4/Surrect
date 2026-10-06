@@ -64,6 +64,45 @@ struct Drive {
 }
 
 #[derive(Serialize)]
+struct Patched {
+    sha: String,
+    size: u64,
+}
+
+#[tauri::command]
+fn write_file(outdir: String, file: String, off: u64, hexdata: String) -> Result<Patched, String> {
+    // Repair bytes of a RECOVERED file only (never touches sources/images).
+    // Must fit inside the existing file; returns the new SHA-256.
+    let p = std::path::Path::new(&outdir).join(&file);
+    if !p.starts_with(std::path::Path::new(&outdir)) {
+        return Err("bad filename".into());
+    }
+    let hexdata: String = hexdata.chars().filter(|c| !c.is_whitespace()).collect();
+    if hexdata.len() % 2 != 0 {
+        return Err("hex must have an even number of digits".into());
+    }
+    let mut raw = Vec::with_capacity(hexdata.len() / 2);
+    let h = hexdata.as_bytes();
+    let mut i = 0;
+    while i < h.len() {
+        let b = u8::from_str_radix(std::str::from_utf8(&h[i..i+2]).map_err(|e| e.to_string())?, 16)
+            .map_err(|_| "bad hex digit".to_string())?;
+        raw.push(b);
+        i += 2;
+    }
+    use std::io::{Seek, SeekFrom, Write};
+    let mut f = std::fs::OpenOptions::new().read(true).write(true).open(&p).map_err(|e| e.to_string())?;
+    let size = f.metadata().map(|m| m.len()).unwrap_or(0);
+    if off.checked_add(raw.len() as u64).unwrap_or(u64::MAX) > size {
+        return Err(format!("patch of {} bytes at {} overruns the {}-byte file", raw.len(), off, size));
+    }
+    f.seek(SeekFrom::Start(off)).map_err(|e| e.to_string())?;
+    f.write_all(&raw).map_err(|e| e.to_string())?;
+    drop(f);
+    Ok(Patched { sha: sha256_file(&p), size })
+}
+
+#[derive(Serialize)]
 struct DriveList {
     admin: bool,
     drives: Vec<Drive>,
@@ -329,7 +368,7 @@ fn run_icat(image: String, off: u64, outdir: String) -> Result<String, String> {
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![run_carve, list_results, read_audit, run_fls, run_icat, run_fcat, read_head, read_at, run_clone, list_drives, run_photorec])
+        .invoke_handler(tauri::generate_handler![run_carve, list_results, read_audit, run_fls, run_icat, run_fcat, read_head, read_at, write_file, run_clone, list_drives, run_photorec])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

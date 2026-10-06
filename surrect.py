@@ -519,7 +519,7 @@ class ImgReader:
         return h.hexdigest(), size - left
 
 # ---------- carve ----------
-def carve(image_path, outdir, only=None, audit_fp=None, resume=False):
+def carve(image_path, outdir, only=None, audit_fp=None, resume=False, frag=False):
     r = ImgReader(image_path)
     os.makedirs(outdir, exist_ok=True)
     try:  # start heartbeat: proves the run launched + when (post-mortem evidence)
@@ -601,6 +601,13 @@ def carve(image_path, outdir, only=None, audit_fp=None, resume=False):
                         continue
                     chopped, size = True, end - off
                     audit.append(f"ZIP @{off}: no EOCD, chopped at next_hdr={next_hdr}")
+                elif ext == "png" and frag:
+                    # truncated PNG: emit chopped so the frag pass can IDAT-stitch it
+                    lim = r.total if r.total is not None else off + mx
+                    end = min(off + mx, next_hdr, lim)
+                    if end - off < 64:
+                        continue
+                    chopped, size = True, end - off
                 else:
                     continue
             else:
@@ -672,40 +679,45 @@ def carve(image_path, outdir, only=None, audit_fp=None, resume=False):
     return results, (r.total if r.total is not None else total), audit
 
 # ---------- frag pass (post-carve reassembly) ----------
+def _assemble(r, outdir, fn, extents):
+    """Concatenate extents -> file. Returns (path, sha, size)."""
+    out = os.path.join(outdir, fn)
+    h = hashlib.sha256()
+    with open(out, "wb") as o:
+        for o2, ln in extents:
+            left = ln
+            while left > 0:
+                c = r.readat(o2 + (ln - left), min(CHUNK, left))
+                if not c:
+                    break
+                o.write(c)
+                h.update(c)
+                left -= len(c)
+    return out, h.hexdigest(), os.path.getsize(out)
+
 def frag_pass(image_path, outdir, results):
-    """Try stitching mp4/zip results. Returns [(fn, kind, detail)] for audit/manifest."""
+    """Try stitching mp4/zip/png/sqlite results. Stitched outputs SUPERSEDE
+    their chopped originals (deleted + dropped from the manifest rewrite).
+    Returns [(fn, kind, detail)] for audit."""
     import zipfile as _zf
-    made = []
+    made, superseded, man_new = [], set(), []
     r = ImgReader(image_path)
     total = r.total
-    man_lines = []
     for n, (fn, off, end, ext, chopped, size) in enumerate(results):
         stop_at = results[n+1][1] if n + 1 < len(results) else None
         if ext == "mp4":
             extents, gaps, score, complete = stitch_mp4(r, off, 4 * 1024 * MiB, total, stop_at=stop_at)
             asm_len = sum(ln for _, ln in extents)
             if score >= 4 and asm_len > size:
-                out = os.path.join(outdir, fn.replace(".mp4", ".stitched.mp4"))
-                h = hashlib.sha256()
-                with open(out, "wb") as o:
-                    for o2, ln in extents:
-                        left = ln
-                        while left > 0:
-                            c = r.readat(o2 + (ln - left), min(CHUNK, left))
-                            if not c:
-                                break
-                            o.write(c)
-                            h.update(c)
-                            left -= len(c)
-                # validate assembly parses cleanly
+                out, digest, sz = _assemble(r, outdir, fn.replace(".mp4", ".stitched.mp4"), extents)
                 vr = ImgReader(out)
                 vend, vtypes = walk_boxes(vr, 0, os.path.getsize(out), os.path.getsize(out))
                 vr.close()
                 if mp4_score(vtypes) >= 4 and vend == os.path.getsize(out):
-                    digest = h.hexdigest()
-                    man_lines.append((os.path.basename(out), 0, asm_len, digest, "stitched"))
+                    man_new.append((os.path.basename(out), 0, asm_len, digest, "stitched"))
                     made.append((os.path.basename(out), "mp4",
                                  f"{len(extents)} extents, {len(gaps)} gaps {gaps}, score={score}"))
+                    superseded.add(fn)
                 else:
                     os.remove(out)
         elif ext == "zip":
@@ -716,13 +728,50 @@ def frag_pass(image_path, outdir, results):
                     for name, payload in res["files"].items():
                         z.writestr(name, payload)
                 digest = sha256_of(open(out, "rb").read())
-                man_lines.append((os.path.basename(out), 0, os.path.getsize(out), digest, "stitched"))
+                man_new.append((os.path.basename(out), 0, os.path.getsize(out), digest, "stitched"))
                 made.append((os.path.basename(out), "zip",
                              f"{len(res['extents'])} extents, gaps {res['gaps']}"))
+                superseded.add(fn)
+        elif ext == "png" and chopped:
+            extents, gaps, ok = stitch_png(r, off, 20 * MiB, total)
+            if ok:
+                out, digest, sz = _assemble(r, outdir, fn.replace(".png", ".stitched.png"), extents)
+                man_new.append((os.path.basename(out), 0, sz, digest, "stitched"))
+                made.append((os.path.basename(out), "png",
+                             f"{len(extents)} extents, gaps {gaps}"))
+                superseded.add(fn)
+        elif ext == "sqlite":
+            extents, gaps, ok = stitch_sqlite(r, off, 1024 * MiB, total)
+            if ok:
+                asm_len = sum(ln for _, ln in extents)
+                if asm_len > size:
+                    out, digest, sz = _assemble(r, outdir, fn.replace(".sqlite", ".stitched.sqlite"), extents)
+                    if sqlite_verify(out):
+                        man_new.append((os.path.basename(out), 0, sz, digest, "stitched"))
+                        made.append((os.path.basename(out), "sqlite",
+                                     f"{len(extents)} extents, gaps {gaps}"))
+                        superseded.add(fn)
+                    else:
+                        os.remove(out)
     r.close()
-    if man_lines:
-        with open(os.path.join(outdir, "manifest.csv"), "a") as m:
-            for row in man_lines:
+    for fn in superseded:
+        try:
+            os.remove(os.path.join(outdir, fn))
+        except OSError:
+            pass
+    if man_new or superseded:
+        rows = []
+        try:
+            import csv as _csv
+            with open(os.path.join(outdir, "manifest.csv")) as m:
+                rows = [x for x in _csv.DictReader(m) if x["file"] not in superseded]
+        except OSError:
+            pass
+        with open(os.path.join(outdir, "manifest.csv"), "w") as m:
+            m.write("file,offset,size,sha256,status\n")
+            for x in rows:
+                m.write(f"{x['file']},{x['offset']},{x['size']},{x['sha256']},{x['status']}\n")
+            for row in man_new:
                 m.write(f"{row[0]},{row[1]},{row[2]},{row[3]},{row[4]}\n")
     return made
 
@@ -868,11 +917,35 @@ def extract_record(r, rec, boot, outpath):
 def fls_all(image_path):
     """Auto-detect FS and list all entries. Returns (fs, records, extra)."""
     with open(image_path, "rb") as f:
-        head = f.read(512)
+        head = f.read(2048)
     try:
         big = os.path.getsize(image_path) > (4 << 30)  # >4GB: no whole-image reads
     except OSError:
         big = False
+    # ext4 has no boot signature requirement: magic at byte 1062 decides
+    sb = parse_ext4_sb(head if len(head) >= 2048 else head + b"\x00" * (2048 - len(head)))
+    if sb and not big:
+        with open(image_path, "rb") as f:
+            data = f.read()
+        if parse_ext4_sb(data):  # re-validate on full data
+            recs = ext4_walk(data, sb)
+            return "ext4", [{"num": x["ino"], "off": -1, "is_dir": x["is_dir"], "path": x["path"],
+                             "deleted": x["deleted"], "size": x["size"], "date": "",
+                             "_rec": x, "_boot": sb} for x in recs], sb
+    if sb and big:
+        return "ext4(too large to enumerate)", [], None
+    # HFS+ has no boot-signature requirement: 2-byte magic at 1024 decides
+    if len(head) >= 1536 and head[1024:1026] in (b"\x48\x2b", b"\x48\x58"):
+        with open(image_path, "rb") as f:
+            data = f.read()
+        b = parse_hfs_boot(data)
+        if b and not big:
+            recs = hfs_walk(data, b)
+            return "HFS+", [{"num": x["file_id"], "off": -1, "is_dir": x["is_dir"], "path": x["path"],
+                             "deleted": x["deleted"], "size": x["size"], "date": "",
+                             "_rec": x, "_boot": b} for x in recs], b
+        if b and big:
+            return "HFS+(too large to enumerate)", [], None
     if len(head) >= 512 and head[510:512] == b"\x55\xaa":
         if head[3:11] == b"EXFAT   ":
             if big:
@@ -1523,7 +1596,7 @@ def stitch_zip(reader, start, mx, total):
         return payloads
 
     straight = verify_straight()
-    if straight is not None:
+    if straight is not None and ooxml_ok(straight):
         ds = start + locals_[0]["data_start"] if locals_ else start
         return {"extents": [(start, eocd + 22 - start)], "gaps": [], "files": straight,
                 "ok": True, "needed": False}
@@ -1603,6 +1676,8 @@ def stitch_zip(reader, start, mx, total):
             break
     if not ok:
         return {"extents": [], "gaps": gaps, "files": {}, "ok": False, "needed": True}
+    if not ooxml_ok(payloads):
+        return {"extents": [], "gaps": gaps, "files": {}, "ok": False, "needed": True}
     return {"extents": sorted(set(extents)), "gaps": gaps, "files": payloads, "ok": True, "needed": True}
 
 def zip_payload(blob, ce):
@@ -1617,7 +1692,857 @@ def zip_payload(blob, ce):
         pass
     return None
 
-# ---------- drives (Windows) ----------
+def ooxml_ok(files):
+    """OOXML cross-check on verified payloads {name: bytes}: Content_Types +
+    rels + document root must exist, inflate, and parse as well-formed XML.
+    Kills false joins of embedded thumbnails/fonts sharing ZIP framing."""
+    names = set(files)
+    if "[Content_Types].xml" not in names:
+        return True  # not OOXML: generic ZIP rules already passed
+    try:
+        import xml.etree.ElementTree as ET
+        ct = ET.fromstring(files["[Content_Types].xml"])
+        parts = set()
+        for el in ct.iter():
+            for attr in ("PartName",):
+                if el.get(attr):
+                    parts.add(el.get(attr))
+        roots = [n for n in names if n.endswith(("document.xml", "workbook.xml", "presentation.xml"))]
+        if not roots:
+            return False
+        for need in ("_rels/.rels", roots[0]):
+            if need not in names:
+                return False
+            ET.fromstring(files[need])  # must be well-formed XML
+        return True
+    except Exception:
+        return False
+
+# ---------- PNG IDAT stitching ----------
+def png_stride(w, h, bitdepth, colortype):
+    ch = {0: 1, 2: 3, 3: 1, 4: 2, 6: 4}.get(colortype)
+    if ch is None:
+        return None
+    if colortype == 3 and bitdepth not in (1, 2, 4, 8):
+        return None
+    if colortype != 3 and bitdepth not in (1, 2, 4, 8, 16):
+        return None
+    return h * (((w * ch * bitdepth + 7) // 8) + 1)
+
+def png_chunk_at(reader, pos, total):
+    """(length, type, data_off, total_len) if a CRC-valid chunk sits at pos, else None."""
+    import binascii
+    h = reader.readat(pos, 8)
+    if len(h) < 8:
+        return None
+    ln = struct.unpack_from(">I", h)[0]
+    typ = bytes(h[4:8])
+    if ln > (16 << 20):
+        return None
+    if not all((65 <= c <= 90) or (97 <= c <= 122) for c in typ):
+        return None
+    body = reader.readat(pos + 8, ln + 4)
+    if len(body) < ln + 4:
+        return None
+    if (binascii.crc32(typ + body[:ln]) & 0xFFFFFFFF) != struct.unpack_from(">I", body, ln)[0]:
+        return None
+    return (ln, typ, pos + 8, ln + 12)
+
+def stitch_png(reader, start, mx, total, window=16 * MiB):
+    """IDAT-chain bridging with CRC resync: every chunk must CRC-validate, the
+    IDAT stream must inflate to exactly height*stride bytes. Returns
+    (extents, gaps, ok)."""
+    import binascii
+    if reader.readat(start, 8) != bytes.fromhex("89504e470d0a1a0a"):
+        return [], [], False
+    lim = start + mx if total is None else min(start + mx, total)
+    ihdr = reader.readat(start + 8, 25)
+    if len(ihdr) < 25 or ihdr[4:8] != b"IHDR":
+        return [], [], False
+    w, h = struct.unpack_from(">II", ihdr, 8)
+    stride = png_stride(w, h, ihdr[16], ihdr[17])
+    if not stride or not (1 <= w <= 10000 and 1 <= h <= 10000):
+        return [], [], False
+    extents, gaps, idat = [], [], bytearray()
+    complete, pos = False, start + 8
+    while pos + 12 <= lim:
+        hit = png_chunk_at(reader, pos, total)
+        if hit:
+            ln, typ, _, tln = hit
+            extents.append((pos, tln))
+            if typ == b"IDAT":
+                idat += reader.readat(pos + 8, ln)
+            pos += tln
+            if typ == b"IEND":
+                complete = True
+                break
+            continue
+        # gap: hunt the next CRC-valid IDAT or IEND
+        found, scanned = None, 0
+        while scanned < window and pos + scanned + 12 <= lim:
+            wstart = pos + scanned
+            w = reader.readat(wstart, min(CHUNK, lim - wstart))
+            if not w:
+                break
+            s = 0
+            while True:
+                i = w.find(b"IDAT", s)
+                j = w.find(b"IEND", s)
+                i = i if i != -1 else len(w)
+                j = j if j != -1 else len(w)
+                k = min(i, j)
+                if k + 4 > len(w) or k < 4:
+                    break
+                cand = wstart + k - 4
+                if cand < pos:
+                    s = k + 1
+                    continue
+                if png_chunk_at(reader, cand, total):
+                    found = cand
+                    break
+                s = k + 1
+            if found is not None:
+                break
+            scanned += max(1, len(w) - 12)
+        if found is None:
+            break
+        gaps.append((pos, found - pos))
+        pos = found
+    if not complete or not idat:
+        return [], [], False
+    try:
+        import zlib
+        raw = zlib.decompress(bytes(idat))
+    except Exception:
+        return [], [], False
+    if len(raw) != stride:
+        return [], [], False
+    return [(start, 8)] + extents, gaps, True
+
+# ---------- ext4 ----------
+def parse_ext4_sb(data):
+    if len(data) < 2048 or data[1024+0x38:1024+0x3A] != b"\x53\xef":
+        return None
+    try:
+        o = 1024
+        log_bs = struct.unpack_from("<I", data, o + 0x18)[0]
+        bs = 1024 << log_bs
+        if bs not in (1024, 2048, 4096, 8192, 16384, 32768):
+            return None
+        bpg = struct.unpack_from("<I", data, o + 0x20)[0]
+        ipg = struct.unpack_from("<I", data, o + 0x28)[0]
+        first_data = struct.unpack_from("<I", data, o + 0x14)[0]
+        isize = struct.unpack_from("<H", data, o + 0x58)[0]
+        incompat = struct.unpack_from("<I", data, o + 0x60)[0]
+        desc_size = struct.unpack_from("<H", data, o + 0xFE)[0]
+        if not bpg or not ipg or isize not in (128, 256):
+            return None
+        return {"kind": "ext4", "bs": bs, "bpg": bpg, "ipg": ipg,
+                "first_data": first_data, "isize": isize,
+                "has_extent": bool(incompat & 0x40), "is_64": bool(incompat & 0x80),
+                "desc_size": desc_size if desc_size in (32, 64) else 32}
+    except (struct.error, IndexError):
+        return None
+
+def ext4_gd(data, b, group):
+    ds = b["desc_size"]
+    gdt = (b["first_data"] + 1) * b["bs"]
+    o = gdt + group * ds
+    try:
+        bb_lo = struct.unpack_from("<I", data, o)[0]
+        ib_lo = struct.unpack_from("<I", data, o + 4)[0]
+        it_lo = struct.unpack_from("<I", data, o + 8)[0]
+        if b["is_64"] and ds >= 64:
+            bb = bb_lo | (struct.unpack_from("<I", data, o + 32)[0] << 32)
+            ib = ib_lo | (struct.unpack_from("<I", data, o + 36)[0] << 32)
+            it = it_lo | (struct.unpack_from("<I", data, o + 40)[0] << 32)
+        else:
+            bb, ib, it = bb_lo, ib_lo, it_lo
+        return bb * b["bs"], ib * b["bs"], it * b["bs"]
+    except (struct.error, IndexError):
+        return None
+
+def ext4_inode(data, b, num):
+    if num < 1:
+        return None
+    try:
+        group = (num - 1) // b["ipg"]
+        idx = (num - 1) % b["ipg"]
+        gd = ext4_gd(data, b, group)
+        if not gd:
+            return None
+        o = gd[2] + idx * b["isize"]
+        if o + 128 > len(data):
+            return None
+        mode = struct.unpack_from("<H", data, o)[0]
+        size_lo = struct.unpack_from("<I", data, o + 4)[0]
+        dtime = struct.unpack_from("<I", data, o + 20)[0]
+        links = struct.unpack_from("<H", data, o + 26)[0]
+        flags = struct.unpack_from("<I", data, o + 32)[0]
+        size_hi = struct.unpack_from("<I", data, o + 108)[0]
+        iblock = bytes(data[o + 40:o + 100])
+        return {"num": num, "off": o, "mode": mode, "is_dir": (mode & 0xF000) == 0x4000,
+                "size": size_lo | (size_hi << 32), "dtime": dtime, "links": links,
+                "flags": flags, "iblock": iblock,
+                "deleted": links == 0 or dtime != 0}
+    except (struct.error, IndexError):
+        return None
+
+def ext4_runs(data, b, rec):
+    """Resolve an inode's data runs [(byte_off, byte_len)]. Extents or block-map."""
+    runs = []
+    try:
+        if rec["flags"] & 0x80000 and rec["iblock"][0:2] == b"\x0a\xf3":  # extent header F30A
+            entries = struct.unpack_from("<H", rec["iblock"], 2)[0]
+            depth = struct.unpack_from("<H", rec["iblock"], 6)[0]
+            nodes = [(rec["iblock"], depth)]
+            seen = 0
+            while nodes and seen < 64:
+                blob, d = nodes.pop()
+                n = struct.unpack_from("<H", blob, 2)[0]
+                if d > 0:
+                    for i in range(n):
+                        e = blob[12 + i * 12:12 + (i + 1) * 12]
+                        if len(e) < 12:
+                            break
+                        lo = struct.unpack_from("<I", e, 4)[0]
+                        hi = struct.unpack_from("<H", e, 6)[0]
+                        # child extent-block lives at a real block: read it
+                        cb = data[(lo | (hi << 32)) * b["bs"]:(lo | (hi << 32)) * b["bs"] + 64 * 1024]
+                        nodes.append((cb, d - 1))
+                else:
+                    for i in range(n):
+                        e = blob[12 + i * 12:12 + (i + 1) * 12]
+                        if len(e) < 12:
+                            break
+                        ln = struct.unpack_from("<I", e, 4)[0]
+                        ln = ln - 32768 if ln > 32768 else ln  # uninit flag
+                        st = struct.unpack_from("<I", e, 8)[0] | (struct.unpack_from("<H", e, 6)[0] << 32)
+                        runs.append((st * b["bs"], ln * b["bs"]))
+                seen += 1
+        else:  # block-map: 12 direct + single/double/triple indirect
+            ptrs = [struct.unpack_from("<I", rec["iblock"], i * 4)[0] for i in range(12)]
+            for p in ptrs:
+                if p:
+                    runs.append((p * b["bs"], b["bs"]))
+    except (struct.error, IndexError):
+        pass
+    return runs
+
+def ext4_read(data, b, rec):
+    out = bytearray()
+    for o, ln in ext4_runs(data, b, rec):
+        out += data[o:o + min(ln, rec["size"] - len(out))]
+        if len(out) >= rec["size"]:
+            break
+    return bytes(out[:rec["size"]])
+
+def ext4_walk(data, b):
+    """Returns [{path, size, ino, deleted, is_dir}]. Deleted inodes (links=0/dtime)
+    plus slack-carved dir entries (inode=0 slots with real names)."""
+    recs, seen_ino = [], set()
+
+    def emit_dir(ino, path, depth=0):
+        if depth > 32:
+            return
+        rec = ext4_inode(data, b, ino)
+        if not rec or not rec["is_dir"]:
+            return
+        blob = ext4_read(data, b, rec)
+        i, n = 0, len(blob)
+        while i + 8 <= n:
+            try:
+                ino_e = struct.unpack_from("<I", blob, i)[0]
+                reclen = struct.unpack_from("<H", blob, i + 4)[0]
+                nlen = blob[i + 6]
+                if reclen < 8 or i + reclen > n:
+                    break
+                if ino_e == 0:
+                    # standard delete zeroes the inode field but the NAME bytes
+                    # survive: record the name itself (size/content unknown here;
+                    # the orphan-inode scan below recovers content by dtime/links)
+                    if nlen and nlen <= 255:
+                        nm0 = bytes(blob[i+8:i+8+nlen]).decode("utf-8", "replace")
+                        if nm0 not in (".", "..") and \
+                           all(c.isprintable() and c != "/" for c in nm0):
+                            recs.append({"path": path.rstrip("/") + "/" + nm0 + " (name only)",
+                                         "size": 0, "ino": -1, "deleted": True, "is_dir": False})
+                    # plus any further hidden entries inside the inflated slack
+                    ideal = 8 + ((nlen + 3) & ~3) if nlen else 8
+                    j = i + ideal
+                    while j + 8 <= i + reclen:
+                        h_ino = struct.unpack_from("<I", blob, j)[0]
+                        h_rl = struct.unpack_from("<H", blob, j + 4)[0]
+                        h_nl = blob[j + 6]
+                        if h_rl < 8 or j + h_rl > i + reclen or not h_nl or h_nl > 255:
+                            break
+                        if h_ino != 0:
+                            nm = bytes(blob[j+8:j+8+h_nl]).decode("utf-8", "replace")
+                            if nm not in (".", "..") and all(32 <= ord(c) < 127 or ord(c) > 127 for c in nm):
+                                recs.append({"path": path.rstrip("/") + "/" + nm, "size": 0,
+                                             "ino": h_ino, "deleted": True, "is_dir": False})
+                        else:
+                            nm = bytes(blob[j+8:j+8+h_nl]).decode("utf-8", "replace")
+                            if nm not in (".", "..") and \
+                               all(c.isprintable() and c != "/" for c in nm):
+                                recs.append({"path": path.rstrip("/") + "/" + nm + " (name only)",
+                                             "size": 0, "ino": -1, "deleted": True, "is_dir": False})
+                        j += 4
+                    i += reclen
+                    continue
+                nm = bytes(blob[i+8:i+8+nlen]).decode("utf-8", "replace")
+                if nm in (".", ".."):
+                    i += reclen
+                    continue
+                full = path.rstrip("/") + "/" + nm
+                child = ext4_inode(data, b, ino_e)
+                if child and child["is_dir"]:
+                    recs.append({"path": full, "size": 0, "ino": ino_e, "deleted": False, "is_dir": True})
+                    emit_dir(ino_e, full, depth + 1)
+                elif child:
+                    recs.append({"path": full, "size": child["size"], "ino": ino_e,
+                                 "deleted": child["deleted"], "is_dir": False})
+                    seen_ino.add(ino_e)
+                else:
+                    recs.append({"path": full, "size": 0, "ino": ino_e, "deleted": True, "is_dir": False})
+                i += reclen
+            except (struct.error, IndexError):
+                break
+
+    emit_dir(2, "")
+    # orphan scan: deleted inodes unreferenced by any dir (links=0/dtime) in group 0..N
+    try:
+        total_ino = b["ipg"] * max(1, (len(data) // (b["bs"] * b["bpg"])) + 1)
+        for ino in range(1, min(total_ino, 1024) + 1):
+            if ino in seen_ino:
+                continue
+            rec = ext4_inode(data, b, ino)
+            if rec and not rec["is_dir"] and rec["deleted"] and rec["size"] > 0:
+                recs.append({"path": f"/orphan-ino-{ino}", "size": rec["size"], "ino": ino,
+                             "deleted": True, "is_dir": False})
+    except Exception:
+        pass
+    return recs
+
+# ---------- HFS+ (Apple TN1150, big-endian) ----------
+def parse_hfs_boot(data):
+    if len(data) < 1536 or data[1024:1026] not in (b"\x48\x2b", b"\x48\x58"):
+        return None
+    try:
+        o = 1024
+        bs = struct.unpack_from(">I", data, o + 0x28)[0]
+        total = struct.unpack_from(">I", data, o + 0x2C)[0]
+        if bs < 512 or (bs & (bs - 1)) != 0 or not total:
+            return None
+        co = o + 0x110
+        logical = struct.unpack_from(">Q", data, co)[0]
+        exts = []
+        for i in range(8):
+            st = struct.unpack_from(">I", data, co + 16 + i * 8)[0]
+            ct = struct.unpack_from(">I", data, co + 20 + i * 8)[0]
+            if ct:
+                exts.append((st * bs, ct * bs))
+        if not exts:
+            return None
+        return {"kind": "HFS+", "bs": bs, "total": total, "cat": exts, "logical": logical}
+    except (struct.error, IndexError):
+        return None
+
+def hfs_fork_bytes(data, b, fork, maxlen=1 << 31):
+    """Read fork bytes from in-memory image. fork = (logicalSize, [(off, len)...])."""
+    out = bytearray()
+    size, exts = fork
+    for o, ln in exts:
+        if len(out) >= size:
+            break
+        out += data[o:o + min(ln, size - len(out), maxlen - len(out))]
+    return bytes(out[:size])
+
+def hfs_cat_node(buf, node_off, node_size):
+    """Parse one catalog node: (kind, height, [records], fLink)."""
+    try:
+        d = buf[node_off:node_off + 14]
+        if len(d) < 14:
+            return None
+        flink = struct.unpack_from(">I", d, 0)[0]
+        kind, height = d[8], d[9]
+        nrec = struct.unpack_from(">H", d, 10)[0]
+        recs = []
+        for i in range(nrec):
+            a = struct.unpack_from(">H", buf, node_off + node_size - 2 * (i + 1))[0]
+            e = struct.unpack_from(">H", buf, node_off + node_size - 2 * (i + 2))[0]
+            recs.append(bytes(buf[node_off+a:node_off+e]))
+        return {"kind": kind, "height": height, "recs": recs, "flink": flink}
+    except (struct.error, IndexError):
+        return None
+
+def hfs_cat_key(rec):
+    try:
+        klen = struct.unpack_from(">H", rec, 0)[0]
+        parent = struct.unpack_from(">I", rec, 2)[0]
+        nlen = struct.unpack_from(">H", rec, 6)[0]
+        name = bytes(rec[8:8 + nlen * 2]).decode("utf-16-be", "replace")
+        body_off = 2 + klen
+        if body_off & 1:
+            body_off += 1
+        return parent, name, bytes(rec[body_off:])
+    except (struct.error, IndexError):
+        return None, None, None
+
+def hfs_walk(data, b):
+    """Full-leaf catalog walk + thread-resolved paths. Returns
+    [{path, size, file_id, deleted, is_dir, fork}]. Deleted = entries whose
+    thread link is gone (HFS+ keeps no undelete bit — honest limit)."""
+    cat = hfs_fork_bytes(data, b, (b["logical"], b["cat"]))
+    if len(cat) < 14 + 106:
+        return []
+    try:
+        node_size = struct.unpack_from(">H", cat, 14 + 18)[0]
+        first_leaf = struct.unpack_from(">I", cat, 14 + 10)[0]
+        if node_size < 512 or node_size > 65536:
+            return []
+    except (struct.error, IndexError):
+        return []
+    threads, files_by_id, node = {}, {}, first_leaf
+    seen = 0
+    while node and seen < 100000:
+        seen += 1
+        nd = hfs_cat_node(cat, node * node_size, node_size)
+        if not nd or nd["kind"] != 0xFF:
+            break
+        for rec in nd["recs"]:
+            parent, name, body = hfs_cat_key(rec)
+            if body is None or len(body) < 2:
+                continue
+            typ = struct.unpack_from(">H", body, 0)[0]
+            if typ in (3, 4) and len(body) >= 10:
+                # thread key is (cnid, ""): body names that cnid's parent+name
+                try:
+                    tparent = struct.unpack_from(">I", body, 4)[0]
+                    nlen = struct.unpack_from(">H", body, 8)[0]
+                    tname = bytes(body[10:10 + nlen * 2]).decode("utf-16-be", "replace")
+                    threads[parent] = (tparent, tname)
+                except (struct.error, IndexError):
+                    pass
+            elif typ == 2 and len(body) >= 248:
+                try:
+                    fid = struct.unpack_from(">I", body, 8)[0]
+                    lsize = struct.unpack_from(">Q", body, 88)[0]
+                    exts = []
+                    for i in range(8):
+                        st = struct.unpack_from(">I", body, 88 + 16 + i * 8)[0]
+                        ct = struct.unpack_from(">I", body, 88 + 20 + i * 8)[0]
+                        if ct:
+                            exts.append((st * b["bs"], ct * b["bs"]))
+                    files_by_id[fid] = {"parent": parent, "name": name, "size": lsize,
+                                        "fork": (lsize, exts)}
+                except (struct.error, IndexError):
+                    pass
+            elif typ == 1 and len(body) >= 88:
+                try:
+                    fid = struct.unpack_from(">I", body, 8)[0]
+                    files_by_id[fid] = {"parent": parent, "name": name, "size": 0,
+                                        "fork": None, "is_dir": True}
+                except (struct.error, IndexError):
+                    pass
+        node = nd["flink"]
+        if node == 0:
+            break
+    # thread key (cnid, "") resolves that cnid's own parent+name; root cnid is 2
+    def path_of(fid, depth=0):
+        if fid == 2 or depth > 64:
+            return ""
+        t = threads.get(fid)
+        if t is None:
+            return None
+        ppath = path_of(t[0], depth + 1)
+        return None if ppath is None else ppath.rstrip("/") + "/" + t[1]
+    out = []
+    for fid, info in files_by_id.items():
+        p = path_of(fid)
+        out.append({"path": p if p else f"/orphan-{fid}", "size": info["size"], "file_id": fid,
+                    "deleted": p is None, "is_dir": bool(info.get("is_dir")),
+                    "fork": info.get("fork")})
+    return out
+
+def hfs_extract(data, b, rec):
+    if rec.get("is_dir") or not rec.get("fork"):
+        return None
+    return hfs_fork_bytes(data, b, rec["fork"])
+
+# ---------- RAID 0/1/5 virtual rebuild ----------
+def raid_parity_slot(n, k, rotation):
+    k = k % n
+    if rotation in ("LS", "LA"):
+        return (n - 1 - k) % n
+    return k % n  # RS, RA
+
+def raid_data_slot(n, k, d, rotation):
+    p = raid_parity_slot(n, k, rotation)
+    if rotation in ("LS", "RS"):      # symmetric: data restarts after parity
+        return (p + 1 + d) % n
+    # asymmetric: data always runs from disk 0, skipping parity
+    return d + 1 if d >= p else d
+
+class RaidReader:
+    """Virtual disk assembled from member images. readat/total like ImgReader.
+    level 0/1/5; order = member slot assignment; missing = slot index or None;
+    offsets = per-member byte skips (RAID metadata); rotation LS/RS/LA/RA."""
+
+    def __init__(self, members, level, order, stripe, rotation="LS", offsets=None, missing=None):
+        self.level, self.order = level, list(order)
+        self.n = len(order)
+        self.stripe = stripe
+        self.rotation = rotation
+        self.offsets = list(offsets) if offsets else [0] * self.n
+        self.missing = missing
+        self.fds, self.sizes = [], []
+        for m in members:
+            if m is None:
+                self.fds.append(None)
+                self.sizes.append(0)
+            else:
+                fd = os.open(m, os.O_RDONLY | OBIN)
+                try:
+                    sz = os.path.getsize(m)
+                except OSError:
+                    sz = 0
+                self.fds.append(fd)
+                self.sizes.append(max(0, sz))
+        usable = [s - o for s, o in zip(self.sizes, self.offsets) if s > 0] or [0]
+        mnt = min(usable)
+        if level == 0:
+            self.total = self.n * mnt  # a missing disk reads as a gap, size stays put
+        elif level == 1:
+            self.total = mnt
+        else:
+            self.total = (self.n - 1) * mnt
+        self.path = "raid:" + ",".join(m or "MISSING" for m in members)
+
+    def close(self):
+        for fd in self.fds:
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+
+    def _pread(self, slot, off, ln):
+        fd = self.fds[slot]
+        if fd is None:
+            return None
+        out = bytearray()
+        while len(out) < ln:
+            try:
+                os.lseek(fd, self.offsets[slot] + off + len(out), os.SEEK_SET)
+                c = os.read(fd, ln - len(out))
+            except OSError:
+                break
+            if not c:
+                break
+            out += c
+        return bytes(out)
+
+    def _row(self, k):
+        """Raw S-byte chunks for every slot in stripe-group k (None = missing/bad)."""
+        row = []
+        for s in range(self.n):
+            c = self._pread(s, k * self.stripe, self.stripe)
+            row.append(c if c and len(c) == self.stripe else None)
+        return row
+
+    @staticmethod
+    def _xor_row(row):
+        out = None
+        for c in row:
+            if c is None:
+                continue
+            if out is None:
+                out = bytearray(c)
+            else:
+                for i in range(len(out)):
+                    out[i] ^= c[i]
+        return bytes(out) if out is not None else None
+
+    def _chunk(self, slot, k):
+        """S bytes of stripe-group k from member slot (XOR-reconstructed if missing)."""
+        if self.level == 1:
+            for s in self.order:
+                c = self._pread(s, k * self.stripe, self.stripe)
+                if c:
+                    return c[:self.stripe]
+            return None
+        if slot != self.missing:
+            c = self._pread(slot, k * self.stripe, self.stripe)
+            if c and len(c) == self.stripe:
+                return c
+            if self.level == 0:
+                return None  # no redundancy: gap
+        # RAID5 reconstruct (or RAID1 fallback already handled)
+        row = self._row(k)
+        got = self._xor_row(row)
+        if got is None or len(got) < self.stripe:
+            return None
+        return got[:self.stripe]
+
+    def readat(self, off, ln):
+        if off < 0 or ln <= 0:
+            return b""
+        out = bytearray()
+        while len(out) < ln:
+            o = off + len(out)
+            if self.level == 1:
+                c = self._chunk(0, o // self.stripe)
+                if not c:
+                    break
+                take = c[(o % self.stripe):(o % self.stripe) + (ln - len(out))]
+                if not take:
+                    break
+                out += take
+                continue
+            if self.level == 0:
+                sno, slot = o // self.stripe, (o // self.stripe) % self.n
+                disk = self.order[slot]
+                if disk == self.missing:
+                    break  # unreadable gap
+                doff = (sno // self.n) * self.stripe + (o % self.stripe)
+                c = self._pread(disk, doff, min(self.stripe - (o % self.stripe), ln - len(out)))
+                if not c:
+                    break
+                out += c
+                continue
+            # RAID5
+            S, N = self.stripe, self.n
+            k = o // ((N - 1) * S)
+            din = o % ((N - 1) * S)
+            d, bc = din // S, din % S
+            slot = raid_data_slot(N, k, d, self.rotation)
+            c = self._chunk(slot, k)
+            if not c:
+                break
+            take = c[bc:bc + (ln - len(out))]
+            if not take:
+                break
+            out += take
+        return bytes(out)
+
+def raid_detect(members, stripes=(8192, 16384, 32768, 65536, 131072),
+                rotations=("LS", "RS", "LA", "RA"), rows=32, sample=4096):
+    """Two-stage RAID5 auto-detect (all members must be present):
+    1. XOR-of-all-columns finds the stripe size S (rotation-blind but decisive).
+    2. Virtual assembly per (rotation, order) scored by boot/filesystem magic.
+    Returns [{stripe, rotation, order, score}] best-first."""
+    import itertools
+    fds, sizes = [], []
+    for m in members:
+        fd = os.open(m, os.O_RDONLY | OBIN)
+        try:
+            sizes.append(os.path.getsize(m))
+        except OSError:
+            sizes.append(0)
+        fds.append(fd)
+    n = len(members)
+    stage1 = []
+    try:
+        span = min(sizes) if sizes else 0
+        for S in stripes:
+            if S * n > span or S <= 0:
+                continue
+            good = tried = 0
+            maxk = max(1, span // S // n)
+            for r in range(rows):
+                k = (r * max(1, maxk // rows)) % maxk
+                cols, ok = [], True
+                for s in range(n):
+                    try:
+                        os.lseek(fds[s], k * S, os.SEEK_SET)
+                        c = os.read(fds[s], min(sample, S))
+                    except OSError:
+                        c = b""
+                    if len(c) < min(sample, S):
+                        ok = False
+                        break
+                    cols.append(c)
+                if not ok:
+                    continue
+                tried += 1
+                y = None
+                for c in cols:
+                    y = bytearray(c) if y is None else bytearray(a ^ b for a, b in zip(y, c))
+                if y is not None and all(v == 0 for v in y):
+                    good += 1
+            if tried:
+                stage1.append((S, good / tried))
+        stage1.sort(key=lambda t: -t[1])
+        if not stage1 or stage1[0][1] < 0.5:
+            return [{"stripe": None, "rotation": None, "order": None, "score": 0.0,
+                     "note": "no stripe size validates — not RAID5 or members misaligned"}]
+        out = []
+        orders = list(itertools.permutations(range(n))) if n <= 4 else [tuple(range(n))]
+        # NB: sub-harmonic stripe sizes tie at 1.0 (any divisor of the true
+        # stripe validates) — evaluate ALL qualifying candidates and let the
+        # MFT-continuity bonus break the tie, not list order.
+        floor = max(0.5, stage1[0][1] - 0.1)
+        for S, sscore in stage1:
+            if sscore < floor:
+                continue
+            for rot in rotations:
+                for order in orders:
+                    try:
+                        rr = RaidReader(members, 5, list(order), S, rot)
+                        boot = rr.readat(0, 512)
+                    except OSError:
+                        continue
+                    score = sscore * 0.5
+                    if len(boot) >= 512:
+                        if boot[3:11] in (b"NTFS    ", b"MSDOS5.0") or boot[3:11] == b"EXFAT   ":
+                            score += 0.3
+                        if boot[510:512] == b"\x55\xaa":
+                            score += 0.15
+                    if len(boot) >= 1064 and boot[1062:1064] == b"\x53\xef":
+                        score += 0.3  # ext4 superblock magic at 1024+0x38
+                    # MFT continuity: sub-harmonic stripe sizes assemble the boot
+                    # fine but scramble everything past the first stripe. Count
+                    # parseable MFT records at 1MB logical to break the tie.
+                    try:
+                        sample = rr.readat(1 << 20, 1 << 20)
+                        mft_ok = 0
+                        for pos in range(0, len(sample) - 64, 1024):
+                            if sample[pos:pos+4] == b"FILE" and parse_mft_record(sample, pos):
+                                mft_ok += 1
+                                if mft_ok >= 6:
+                                    break
+                        score += min(0.3, 0.05 * mft_ok)
+                    except OSError:
+                        pass
+                    rr.close()
+                    out.append({"stripe": S, "rotation": rot, "order": list(order),
+                                "score": round(min(1.0, score), 3), "mft": mft_ok})
+        # primary: capped score; tie-break: MFT continuity count (sub-harmonic
+        # stripes assemble the boot fine but scramble everything past it)
+        out.sort(key=lambda r: (-r["score"], -r["mft"]))
+        return out
+    finally:
+        for fd in fds:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+
+# ---------- SQLite page stitching ----------
+def sqlite_db_id(buf):
+    """(page_size, schema_cookie, encoding) from a 100B header, or None."""
+    try:
+        if len(buf) < 100 or buf[:16] != b"SQLite format 3\x00":
+            return None
+        ps = struct.unpack_from(">H", buf, 16)[0]
+        ps = 65536 if ps == 1 else ps
+        if ps not in (512, 1024, 2048, 4096, 8192, 16384, 32768, 65536):
+            return None
+        return (ps, struct.unpack_from(">I", buf, 40)[0], struct.unpack_from(">I", buf, 56)[0])
+    except (struct.error, IndexError):
+        return None
+
+def sqlite_page_ok(buf, ps, base=0):
+    """Validate one page body: type + full cell-pointer array in bounds.
+    Interior pages (0x02/0x05) have a 12B header (rightmost child pointer);
+    leaf pages (0x0D/0x0A) have 8B. Wrong offset here fails every interior
+    page (gauntlet-proven: pointers [0,7,...] are the rightmost field)."""
+    try:
+        if len(buf) < base + 8:
+            return False
+        t = buf[base]
+        if t not in (2, 5, 0x0D, 0x0A):
+            return False
+        hdr = 12 if t in (2, 5) else 8
+        ncells = struct.unpack_from(">H", buf, base + 3)[0]
+        cstart = struct.unpack_from(">H", buf, base + 5)[0]
+        if cstart == 0:
+            cstart = 65536
+        if ncells * 2 + base + hdr > ps or cstart > ps or cstart < base + hdr:
+            return False
+        for i in range(ncells):
+            p = struct.unpack_from(">H", buf, base + hdr + i * 2)[0]
+            if p < cstart or p >= ps:
+                return False
+        return True
+    except (struct.error, IndexError):
+        return False
+
+def sqlite_verify(path):
+    """Decisive gate: the assembled file must OPEN in sqlite3 and every user
+    table must survive SELECT count(*) (forces B-tree traversal of bridged
+    pages — garbage pages raise DatabaseError). Returns table count or 0."""
+    import sqlite3 as _sq
+    try:
+        con = _sq.connect("file:%s?mode=ro" % path, uri=True, timeout=5)
+        tabs = [r[0] for r in con.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")]
+        if not tabs:
+            con.close()
+            return 0
+        for t in tabs:
+            con.execute('SELECT count(*) FROM "%s"' % t.replace('"', '""')).fetchone()
+        con.close()
+        return len(tabs)
+    except Exception:
+        return 0
+
+def stitch_sqlite(reader, start, mx, total, window=16 * MiB):
+    """Page-granular bridging: walk validated pages; on a gap, sector-scan for
+    the next page of the same DB (size + cell sanity), chained (a lone page is
+    accepted only as a plausible tail). Returns (extents, gaps, ok) where ok
+    means the walk covered >=2 pages; frag_pass applies the sqlite3 gate."""
+    lim = start + mx if total is None else min(start + mx, total)
+    head = reader.readat(start, 128)
+    ident = sqlite_db_id(head + b"\x00" * (128 - len(head)))
+    if not ident:
+        return [], [], False
+    ps, cookie, enc = ident
+    p1 = reader.readat(start, ps)
+    if len(p1) < ps or not sqlite_page_ok(p1, ps, 100):
+        return [], [], False  # page 1 must be cell-sane (sqlite3-open gate decides the rest)
+    extents, gaps = [], []
+    seg, pos, npages = start, start, 0
+    while pos + ps <= lim:
+        b = reader.readat(pos, ps)
+        if len(b) < ps:
+            break
+        if sqlite_page_ok(b, ps, 100 if pos == start else 0):
+            npages += 1
+            pos += ps
+            continue
+        # gap: sector-stepped scan for the next page of THIS db
+        found, scanned = None, 0
+        while scanned < window and pos + scanned + ps <= lim:
+            wstart = pos + scanned
+            w = reader.readat(wstart, min(CHUNK, lim - wstart))
+            if not w:
+                break
+            s = 0
+            while s + ps <= len(w):
+                cand = wstart + s
+                cb = w[s:s+ps]
+                if sqlite_page_ok(cb, ps):
+                    # chained: next page also valid, or plausible tail near end
+                    nxt = cand + ps
+                    tail = nxt + 2 * ps >= lim
+                    if tail or sqlite_page_ok(reader.readat(nxt, ps), ps):
+                        found = cand
+                        break
+                s += 512
+            if found is not None:
+                break
+            scanned += max(1, len(w) - ps)
+        if found is None:
+            break
+        if pos > seg:
+            extents.append((seg, pos - seg))
+        gaps.append((pos, found - pos))
+        seg = pos = found
+    if pos > seg:
+        extents.append((seg, pos - seg))
+    return extents, gaps, npages >= 2
 def smart_by_letter():
     """Map drive letter -> (health, tempC|''). Best-effort WMI/PowerShell, never raises."""
     try:
@@ -1710,6 +2635,15 @@ def main():
     ap.add_argument("--fcat", default=None, metavar="PATH", help="extract FAT/exFAT file by path")
     ap.add_argument("--icat", type=int, default=None, metavar="MFT_OFF")
     ap.add_argument("--rec", type=int, default=None, metavar="MFT_NUM")
+    ap.add_argument("--raid", type=int, default=None, choices=(0, 1, 5),
+                    help="virtual RAID rebuild level (needs --members)")
+    ap.add_argument("--members", default=None, help="comma-separated member images, use MISSING for an absent disk")
+    ap.add_argument("--order", default=None, help="comma-separated slot order, e.g. 0,1,2")
+    ap.add_argument("--stripe", type=int, default=65536, help="stripe size in bytes")
+    ap.add_argument("--rotation", default="LS", choices=("LS", "RS", "LA", "RA"))
+    ap.add_argument("--missing", type=int, default=None, help="absent member slot")
+    ap.add_argument("--offsets", default=None, help="comma-separated per-member byte skips")
+    ap.add_argument("--raid-detect", action="store_true", help="rank (stripe, rotation, order) from XOR + boot magic")
     ap.add_argument("--clone", nargs=2, default=None, metavar=("SRC", "DST"))
     ap.add_argument("--fresh", action="store_true", help="ignore existing .map, start clone over")
     ap.add_argument("--block", type=int, default=MiB)
@@ -1725,6 +2659,35 @@ def main():
     if a.is_admin:
         print(str(is_admin()))
         return
+    if a.raid_detect:
+        if not a.members:
+            ap.error("--raid-detect needs --members")
+        import json
+        for r in raid_detect(a.members.split(","))[:8]:
+            print(json.dumps(r))
+        return
+    if a.raid is not None:
+        if not a.members:
+            ap.error("--raid needs --members")
+        members = [None if m.strip() == "MISSING" else m.strip() for m in a.members.split(",")]
+        order = [int(x) for x in a.order.split(",")] if a.order else list(range(len(members)))
+        offsets = [int(x) for x in a.offsets.split(",")] if a.offsets else None
+        rr = RaidReader(members, a.raid, order, a.stripe, a.rotation, offsets, a.missing)
+        # materialize the virtual volume, then run the normal pipeline on it
+        vimg = os.path.join(a.outdir, "raid_virtual.img")
+        os.makedirs(a.outdir, exist_ok=True)
+        with open(vimg, "wb") as o:
+            left, pos = rr.total, 0
+            while left > 0:
+                c = rr.readat(pos, min(CHUNK, left))
+                if not c:
+                    break
+                o.write(c)
+                pos += len(c)
+                left -= len(c)
+        rr.close()
+        print(f"RAID{a.raid} virtual image: {vimg} ({pos} bytes, {a.rotation} stripe={a.stripe})")
+        a.image = vimg
     if a.clone:
         try:
             r = clone_disk(a.clone[0], a.clone[1], a.block, a.retries, fresh=a.fresh)
@@ -1751,7 +2714,7 @@ def main():
         print("that drive instead (Copy disk first is the safest route).")
         return
     try:
-        results, total, audit = carve(a.image, a.outdir, only, audit_path, resume=a.resume)
+        results, total, audit = carve(a.image, a.outdir, only, audit_path, resume=a.resume, frag=a.frag)
     except FileNotFoundError:
         print(f"cannot open '{a.image}' — no such drive or file (drives look like \\\\.\\C:).")
         return
@@ -1794,15 +2757,21 @@ def main():
             dt = f" [{r['date']}]" if r.get("date") else ""
             print(f"  #{r['num']} @{r['off']} {'dir' if r['is_dir'] else 'file'} {r['path']} size={r['size']}{dt} {star}")
     if a.fcat:
-        if not fs.startswith("FAT") and fs != "exFAT":
-            print("fcat: only FAT/exFAT images (use --icat/--rec for NTFS)"); return
+        if not (fs.startswith("FAT") or fs in ("exFAT", "ext4", "HFS+")):
+            print("fcat: only FAT/exFAT/ext4/HFS+ images (use --icat/--rec for NTFS)"); return
         hit = next((x for x in records if x["path"] == a.fcat), None)
         if not hit or hit["is_dir"]:
             print("fcat: no such file"); return
         with open(a.image, "rb") as f:
             data = f.read()
-        fn = exfat_extract if fs == "exFAT" else fat_extract
-        blob = fn(data, hit["_boot"], hit["_rec"])
+        if fs == "ext4":
+            rec = ext4_inode(data, hit["_boot"], hit["num"])
+            blob = ext4_read(data, hit["_boot"], rec) if rec else None
+        elif fs == "HFS+":
+            blob = hfs_extract(data, hit["_boot"], hit["_rec"])
+        else:
+            fn = exfat_extract if fs == "exFAT" else fat_extract
+            blob = fn(data, hit["_boot"], hit["_rec"])
         if not blob:
             print("fcat: empty/unreadable"); return
         op = os.path.join(a.outdir, "fcat_" + "".join(

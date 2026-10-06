@@ -71,3 +71,8 @@ table.grid tr:hover td { background: var(--surface); }
 @keyframes sheen { 0% { margin-left: -30%; } 100% { margin-left: 100%; } }
 @media (prefers-reduced-motion: reduce) { .progress > div { animation: none; width: 100%; } }
 :focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+@media print {
+  .sidebar, .btn, input, select, textarea { display: none !important; }
+  .main { max-width: none; padding: 0; }
+  .log { max-height: none; background: #fff; color: #111; border: 1px solid #999; }
+}
