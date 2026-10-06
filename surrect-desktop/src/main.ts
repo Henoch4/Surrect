@@ -64,6 +64,7 @@ function render() {
       }).join("");
       body = `
       <h1>Where are your lost files?</h1><p class="sub">Pick the drive, like Recuva does. ${state.isAdmin ? "Ready — this app can read drives now." : "Needs <strong>Run as administrator</strong> before it can read drives."}</p>
+      ${state.isAdmin ? "" : `<div class="card" style="border-color:var(--danger);background:var(--danger-fill);color:var(--on-danger)"><strong>Not running as administrator</strong> — Windows will block every drive read. Close Surrect, right-click it → <strong>Run as administrator</strong>, then come back. (Disk image files work without it.)</div>`}
       ${tabs}
       ${engineTabs}
       <div class="card"><div class="row">
@@ -100,8 +101,12 @@ function render() {
       </div></div>
       <div class="log">${dump}</div>`;
   } else if (state.view === "scan") {
+    const needSource = !state.image
+      ? `<div class="card" style="border-color:var(--primary);background:var(--info-fill);color:var(--on-info)">Nothing to recover yet — <strong>pick a drive or a disk copy on the Start page first</strong>, then come back here.<div class="row" style="margin-top:8px"><button class="btn primary" data-view="source">Go to Start</button></div></div>`
+      : "";
     body = `
-      <h1>Recover</h1><p class="sub">${state.scanning ? "Searching every corner…" : "Ready when you are."}</p>
+      <h1>Recover</h1><p class="sub">${state.scanning ? "Searching every corner…" : (needSource ? "Waiting for you to pick something." : "Ready when you are.")}</p>
+      ${needSource}
       ${state.scanning ? `<div class="progress"><div></div></div>` : ""}
       <div class="card"><div class="row">
         <button class="btn primary" id="start2" ${!state.image || state.scanning ? "disabled" : ""}>Start recovery</button>
@@ -290,8 +295,18 @@ function cleanPath(s: string) {
 }
 
 async function runCarve() {
-  if (!state.image) return;
+  if (!state.image) {
+    state.view = "scan"; state.scanning = false;
+    appendLog("Nothing picked yet — choose a drive or disk copy on the Start page first.");
+    render();
+    return;
+  }
   state.view = "scan"; state.scanning = true; state.log = ""; render();
+  if (state.image.startsWith("\\\\.\\") && !state.isAdmin) {
+    appendLog("Heads up: you're not running as administrator, so Windows will likely block this drive.");
+    appendLog("Close Surrect, right-click it → Run as administrator, then retry. Trying anyway…");
+    render();
+  }
   if (state.engine === "photorec") {
     appendLog(`$ photorec /d "${state.outdir}" /cmd "${state.image}" partition_none,fileopt,everything,enable,search`);
     render();
