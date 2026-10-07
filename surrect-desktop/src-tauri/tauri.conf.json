@@ -15,6 +15,7 @@
   },
   "bundle": {
     "active": true,
+    "publisher": "Henoch",
     "targets": "all",
     "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png", "icons/icon.ico", "icons/icon.icns"],
     "externalBin": ["binaries/surrect", "binaries/photorec", "binaries/ewfverify", "binaries/ewfexport", "binaries/ewfinfo", "binaries/ewfacquire"],
